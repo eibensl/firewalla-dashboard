@@ -453,6 +453,8 @@
         "pl-pick|Block": "Block this connection, now: to Decided if your rules already block it, else to Review. Undo for a minute at the top.",
         "pl-pick-all|Allow All": "Allow every row, now: those your rules already allow go to Decided, the rest to Review. Undo for a minute at the top.",
         "pl-pick-all|Block All": "Block every row, now: those your rules already block go to Decided, the rest to Review. Undo for a minute at the top.",
+        "pl-concur|Concur": "You agree with the Router Rule on every row ticked: each is decided as the router does it now and goes to Decided. Undo for a minute at the top.",
+        "pl-concur|Non-Concur": "You disagree with the Router Rule on every row ticked: each is decided the opposite way (Allow becomes Block, Block becomes Allow) and goes to Review for Show Me How. Undo for a minute at the top.",
         "pl-return|Return": "Send this row back to New Connections, with its choice.",
         "pl-return|Return to New": "Send every row back to New Connections, with their choices.",
         "pl-smh|Show Me How": "The steps for this change in the Firewalla app, beside this item.",
@@ -648,6 +650,21 @@
     const plDestPort = r => /random/i.test(r.port || "") ? r.port.replace(/ random ports/i, " Random") : r.port;
     const plHome = it => it.refs?.[0] || it.id;   // what stays the same through every move
     const plItems = new Map();   // id -> item as last drawn (for the buttons)
+    // Concur / Non-Concur (owner, 25 Nov 2026, D-1071): the New Connections
+    // rows ticked, as JSON [item id, row key], kept across redraws until used
+    // or gone. Only a row whose Router Rule is Allow or Block can be ticked.
+    const plSel = new Set();
+    let plNew = [];   // the New Connections items as last drawn
+    const plSelKey = (it, r) => JSON.stringify([it.id, r.key]);
+    const plCanSel = r => r.rule === "Allow" || r.rule === "Block";
+    const plSelKeys = only => plNew.filter(it => !only || it.id === only).flatMap(it => it.rows.filter(plCanSel).map(r => plSelKey(it, r)));
+    document.addEventListener("change", e => {
+        const el = e.target;
+        if (!el?.matches?.("input.pl-sel")) return;
+        (el.dataset.sel ? [el.dataset.sel] : plSelKeys(el.dataset.selItem)).forEach(k => el.checked ? plSel.add(k) : plSel.delete(k));
+        window.FirewallaDashboard?.refresh?.();
+    });
+    const plTick = (on, attrs, tip) => `<input type="checkbox" class="pl-sel"${on ? " checked" : ""}${attrs}${tip ? ` data-tip="${F.esc(tip)}"` : ""}>`;
     let plSmh = null;    // Show Me How open: {id, undo, way, top, tab}
 
     // Ask Claude (owner, 19 and 20 Nov 2026): the only coloured button.
@@ -711,13 +728,14 @@
     function plNewCard(it) {
         const home = plHome(it), open = plOpen.has("more|" + home);
         const many = plSources(it.rows) > 1;
-        const sug = plSuggest(it), asked = !!plConvo(it);
+        const sug = plSuggest(it), asked = !!plConvo(it), mine = plSelKeys(it.id);
         const every = v => it.rows.every(r => r.pick === v);
         const pick = (r, v) => `<button type="button" class="pl-pick ${v}${r.pick === v ? " on" : r.pick ? " off" : ""}" data-view-action="pl-pick" data-value="${F.esc(JSON.stringify([it.id, r.key, v]))}"${plTipAttr("pl-pick", v === "allow" ? "Allow" : "Block")}>${v === "allow" ? "Allow" : "Block"}</button>`;
         const all = v => `<button type="button" class="pl-pick ${v}${every(v) ? " on" : every(v === "allow" ? "block" : "allow") ? " off" : ""}" data-view-action="pl-pick-all" data-value="${F.esc(JSON.stringify([it.id, v]))}"${plTipAttr("pl-pick-all", v === "allow" ? "Allow All" : "Block All")}>${v === "allow" ? "Allow All" : "Block All"}</button>`;
         const rows = open ? it.rows : it.rows.slice(0, 2);
         const body = rows.map(r => `<tr data-row-id="${F.esc(r.key)}">
-            <td data-sort="${F.esc(r.rule)}">${plPill(r.rule)}</td>${many ? `<td>${F.esc(r.src.name)}</td>` : ""}<td class="muted">Random</td>
+            <td data-sort="${F.esc(r.rule)}" class="nowrap">${plCanSel(r) ? plTick(plSel.has(plSelKey(it, r)), ` data-sel="${F.esc(plSelKey(it, r))}"`, "Tick to Concur or Non-Concur with the Router Rule, at the top of New Connections.")
+                : plTick(false, " disabled", "The router's rule for this is unclear, so there is nothing to concur with: use Allow or Block.")} ${plPill(r.rule)}</td>${many ? `<td>${F.esc(r.src.name)}</td>` : ""}<td class="muted">Random</td>
             <td>${r.dst.mac && /:/.test(r.dst.mac) ? F.go(F.esc(r.dst.name), F.target("devices", { mac: r.dst.mac })) : F.esc(r.dst.name)}</td>
             <td class="nowrap">${F.esc(plDestPort(r))}</td><td class="nowrap">${plCounts(r)}</td>
             <td data-sort="${r.pick === "allow" ? 1 : 0}">${pick(r, "allow")}</td><td data-sort="${r.pick === "block" ? 1 : 0}">${pick(r, "block")}</td>
@@ -726,7 +744,7 @@
         return `<article class="pl-card st-new${plFocusOf(it) ? " pl-focus" : ""}" data-busy-scope data-pl-item="${F.esc(it.id)}">
             <div class="pl-card-head">${it.tag ? `<span class="pl-tag warn">${F.esc(it.tag)}</span>` : ""}<strong>${F.esc(it.title)}</strong><span class="pl-when">${plWhen(it.first, it.last)}</span></div>
             ${plWhy(it.why, home)}
-            <table class="pl-table"><thead><tr><th>Router Rule</th>${many ? "<th>Source</th>" : ""}<th>Source Port</th><th>Dest</th><th>Dest Port</th><th>Connections</th>
+            <table class="pl-table"><thead><tr><th class="nowrap">${mine.length ? plTick(mine.every(k => plSel.has(k)), ` data-sel-item="${F.esc(it.id)}"`, "Tick every row of this card.") + " " : ""}Router Rule</th>${many ? "<th>Source</th>" : ""}<th>Source Port</th><th>Dest</th><th>Dest Port</th><th>Connections</th>
                 <th>${all("allow")}</th><th>${all("block")}</th><th>Claude Suggests</th><th>Delete</th></tr></thead><tbody>${body}</tbody></table>
             ${it.rows.length > 2 ? `<a href="#" class="pl-more" data-view-action="pl-toggle" data-value="${F.esc("more|" + home)}">${open ? "▾ Show only the first 2" : `▸ ${it.rows.length - 2} more connection${it.rows.length - 2 === 1 ? "" : "s"}`}</a>` : ""}
             <div class="pl-acts">${btn("pl-act", "pl-delete-rows", JSON.stringify([it.id]), "Delete", PL_TIPS["pl-delete|Delete"])}${plAskButton(it)}</div>
@@ -1001,6 +1019,22 @@
                 const [keys, v] = action === "pl-pick" ? [[rest[0]], rest[1]] : [it.rows.map(r => r.key), rest[0]];
                 return plMsg(await post("/api/policy/decide", { item: id, keys, pick: v }));
             }
+            // Concur: the Router Rule is right (your pick = its Allow / Block, so to Decided).
+            // Non-Concur: it is wrong (the opposite pick, so to Review). One note, one Undo.
+            if (action === "pl-sel-clear") { plSel.clear(); return null; }
+            if (action === "pl-concur") {
+                const picks = new Map();
+                plNew.forEach(it => it.rows.forEach(r => {
+                    if (!plSel.has(plSelKey(it, r))) return;
+                    const pick = (r.rule === "Allow") === (value === "concur") ? "allow" : "block";
+                    const p = picks.get(it.id + "|" + pick) || picks.set(it.id + "|" + pick, { item: it.id, keys: [], pick }).get(it.id + "|" + pick);
+                    p.keys.push(r.key);
+                }));
+                if (!picks.size) return null;
+                const r = plMsg(await post("/api/policy/decide", { picks: [...picks.values()] }));
+                if (r?.ok) plSel.clear();
+                return r;
+            }
             if (action === "pl-undo") return plMsg(await post("/api/policy/undo", { at: Number(value) }));
             if (action === "pl-return") {
                 const [id, key] = JSON.parse(value);
@@ -1089,7 +1123,15 @@
             if (typeof x === "string") return x;
             const { s, page, review, action, confirm, n, items, notWorking } = x;
             const groups = page.new.filter(it => it.group), singles = page.new.filter(it => !it.group);
-            const newBody = (groups.length ? `<div class="pl-sub">Patterns</div>${groups.map(it => plNewCard(plItems.get(it.id))).join("")}` : "")
+            plNew = page.new.map(it => plItems.get(it.id));
+            const selectable = plSelKeys();
+            [...plSel].forEach(k => { if (!selectable.includes(k)) plSel.delete(k); });
+            // Concur / Non-Concur (owner, 25 Nov 2026, D-1071): at the top of New Connections, for every row ticked.
+            const chosen = plSel.size, cbtn = (v, label) => `<button type="button" class="card-button small pl-btn pl-act" data-view-action="pl-concur" data-value="${v}"${chosen ? "" : " disabled"}${plTipAttr("pl-concur", label)}>${label}</button>`;
+            const concur = selectable.length ? `<div class="pl-concur"><label class="small">${plTick(chosen === selectable.length, ' data-sel-item=""', "Tick every row in New Connections.")} Select All</label>
+                <span class="small muted">${chosen ? `${F.count(chosen)} of ${F.count(selectable.length)} ticked` : "Tick rows by their Router Rule"}</span>
+                ${cbtn("concur", "Concur")}${cbtn("non", "Non-Concur")}${chosen ? `<a href="#" class="small" data-view-action="pl-sel-clear">Clear</a>` : ""}</div>` : "";
+            const newBody = concur + (groups.length ? `<div class="pl-sub">Patterns</div>${groups.map(it => plNewCard(plItems.get(it.id))).join("")}` : "")
                 + (singles.length ? `<div class="pl-sub">Single Connections</div>${singles.map(it => plNewCard(plItems.get(it.id))).join("")}` : "");
             const lo = s.left_out || [];
             // The tries are from any time each was offline in the last 7 days;

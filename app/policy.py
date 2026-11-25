@@ -2019,100 +2019,119 @@ POLICY_UNDO_SECONDS = 60   # how long a New Connections Allow / Block can be und
 
 @app.post("/api/policy/decide")
 def api_policy_decide(payload: dict = Body(default={})):
-    """New Connections' Allow / Block ({item, keys, pick}): the rows clicked
-    are decided at once (owner, 24 Nov 2026, D-1066: Move to Review is
-    gone). Each row is its own decision. A row whose pick your rules already
-    do goes to Decided; a row to a no-device address the router blocked
-    every try of, picked Block, is Decided as blocked; the rest go to Review:
-    one Review item per source and target, joining the one already in Review
-    (an internet item: one Review item per site). Rows not clicked stay."""
-    f_ = Fields(payload)
-    item_id, pick = f_.text("item", 300, strip=False), payload.get("pick")
-    if pick not in ("allow", "block"):
+    """New Connections' Allow / Block ({item, keys, pick}) and Concur /
+    Non-Concur ({picks: [{item, keys, pick}, ...]}: the rows ticked across
+    every card, owner 25 Nov 2026, D-1071): the rows are decided at once
+    (owner, 24 Nov 2026, D-1066: Move to Review is gone). Each row is its own
+    decision. A row whose pick your rules already do goes to Decided; a row
+    to a no-device address the router blocked every try of, picked Block, is
+    Decided as blocked; the rest go to Review: one Review item per source and
+    target, joining the one already in Review (an internet item: one Review
+    item per site). Rows not picked stay. One note and one Undo for the lot."""
+    parts = payload.get("picks") if isinstance(payload.get("picks"), list) else [payload]
+    parts = [p for p in parts[:200] if isinstance(p, dict)]
+    if not parts or any(p.get("pick") not in ("allow", "block") for p in parts):
         return {"ok": False, "error": "Unknown choice"}
     with policy_lock:
         data = policy_data()
-        item = next((x for x in data["page"]["new"] if x["id"] == item_id), None)
-        if not item:
-            return {"ok": False, "error": "That item is gone (decided or quiet for 7 days)."}
-        wanted = set(f_.strings("keys", 400, 300))
-        rows = [r for r in item["rows"] if r["key"] in wanted]
-        if not rows:
-            return {"ok": False, "error": "That connection is gone."}
         st = policy_state_load()
         now = time.time()
         cards = {c["key"]: c for c in data["triage"]}
-        undo = {r["key"]: st["nc_refs"].get(r["key"]) or [] for r in rows}
-        change, decided = [], 0
-        for r in rows:
-            k, c = r["key"], cards.get(r["key"])
-            label = f"{r['src']['name']} → {r['dst']['name']} · {r['port']}"
-            keep = {"at": now, "label": label, "status": "decided", "why": item.get("why"), "refs": item["refs"], "picked_at": now}
-            if item.get("internet"):
-                x = next((e for e in policy_internet.get("explained_rows") or [] if f"inet|{e['mac']}|{e['dest']}" == k), None)
-                if not x:
-                    undo.pop(k, None)
-                    continue
-                if pick == "block":
-                    change.append((k, {"mac": x["mac"], "name": x["name"], "dest": x["dest"], "country": x["country"],
-                                       "pid": x["allowed_by"]["pid"], "rule": x["allowed_by"]["text"], "flows": x["flows"],
-                                       "last_seen": x["last_seen"], "port": x.get("port")}))
-                else:
-                    st["decisions"][k] = {**keep, "intent": "allow", "kind": "keep", "inet": {"dest": x["dest"], "country": x["country"],
-                                          "name": x["name"], "mac": x["mac"], "rule": x["allowed_by"]["text"]}}
-                    decided += 1
-            elif not c:
-                undo.pop(k, None)
-                continue
-            elif c["rules"] == ("allowed" if pick == "allow" else "blocked"):
-                st["decisions"][k] = {**keep, "intent": pick, "kind": "keep"}
-                decided += 1
-            elif pick == "block" and POLICY_PATTERN_IP.match(str(c["dst"]["mac"])) and c["reality"] == "blocked":
-                # No device answers there, so no rule can be made: Decide As
-                # Blocked is automatic (owner, 19 Nov 2026).
-                st["decisions"][k] = {**keep, "intent": "block", "kind": "nodev"}
-                decided += 1
-            else:
-                change.append((k, None))
-            st["row_picks"].pop(k, None)
-            st["nc_refs"].pop(k, None)
+        undo, names, decided, to_review = {}, [], 0, 0
+        for p in parts:
+            f_ = Fields(p)
+            item_id, pick = f_.text("item", 300, strip=False), p["pick"]
+            item = next((x for x in data["page"]["new"] if x["id"] == item_id), None)
+            wanted = set(f_.strings("keys", 400, 300))
+            rows = [r for r in (item or {}).get("rows") or [] if r["key"] in wanted and r["key"] not in undo]
+            done = policy_decide_rows(st, cards, item, rows, pick, now) if rows else None
+            if done:
+                undo.update(done[0])
+                names.append(done[1])
+                decided += done[2]
+                to_review += done[3]
         if not undo:
-            return {"ok": False, "error": "That connection is gone."}
-        row_of = {x["key"]: x for x in item["rows"]}
-        first = row_of[next(iter(undo))]
-        name = f"{first['src']['name']} → {first['dst']['name']}" + (f" · {first['port']}" if len(undo) == 1 else "")
-        if change:
-            kind = "internet" if item.get("internet") else "chose"
-            # An internet item becomes one Review item per site, each with
-            # its own site and rule (24 Nov 2026: one item carried only the
-            # first site, so once that was blocked the others were filed as
-            # blocked too, without being blocked).
-            parts = [[x] for x in change] if kind == "internet" else [change]
-            pair = [first["src"].get("mac") or first["src"]["name"], first["dst"].get("mac") or first["dst"]["name"]]
-            for part in parts:
-                r0 = row_of[part[0][0]]
-                fid = None if kind == "internet" else next(
-                    (i for i, f in st["flow"].items() if f["stage"] == "review" and f["kind"] == "chose" and f.get("pair") == pair), None)
-                if fid:
-                    f = st["flow"][fid]
-                    f["keys"] += [k for k, _ in part if k not in f["keys"]]
-                    f["refs"] = list(dict.fromkeys(f["refs"] + item["refs"]))
-                    f["moved_at"] = now
-                else:
-                    title = item["title"] if len(parts) == 1 else f"{r0['src']['name']} → {r0['dst']['name']}"
-                    fid = policy_flow_new(st, kind, [k for k, _ in part], item["refs"], title, now,
-                                          why=item.get("why") if kind == "internet" else None,
-                                          **({"inet": {"mode": "block_dest", **part[0][1]}} if kind == "internet" else {"pair": pair}))
-                for k, inet in part:
-                    r = row_of[k]
-                    st["decisions"][k] = {"intent": pick, "at": now, "label": f"{r['src']['name']} → {r['dst']['name']} · {r['port']}",
-                                          "kind": "chose", "status": "review", "status_at": now, "flow": fid, "why": item.get("why"),
-                                          "picked_at": now, **({"inet": inet} if inet else {})}
-        text = name + ": " + ", ".join(x for x in (f"{decided} to Decided" if decided else "", f"{len(change)} to Review" if change else "") if x) + "."
+            return {"ok": False, "error": "That connection is gone (decided or quiet for 7 days)." if len(parts) == 1
+                    else "Those connections are gone (decided or quiet for 7 days)."}
+        name = names[0] if len(names) == 1 else f"{len(undo)} connections"
+        text = name + ": " + ", ".join(x for x in (f"{decided} to Decided" if decided else "", f"{to_review} to Review" if to_review else "") if x) + "."
         policy_message(st, now, text, undo=undo)
         policy_state_save(st)
         policy_data(fresh=True)
     return {"ok": True, "message": text}
+
+
+def policy_decide_rows(st, cards, item, rows, pick, now):
+    """One New Connections item's rows, all picked the same way (see
+    api_policy_decide). Returns (undo, name, to Decided, to Review), or None
+    when none of the rows is there any more."""
+    undo = {r["key"]: st["nc_refs"].get(r["key"]) or [] for r in rows}
+    change, decided = [], 0
+    for r in rows:
+        k, c = r["key"], cards.get(r["key"])
+        label = f"{r['src']['name']} → {r['dst']['name']} · {r['port']}"
+        keep = {"at": now, "label": label, "status": "decided", "why": item.get("why"), "refs": item["refs"], "picked_at": now}
+        if item.get("internet"):
+            x = next((e for e in policy_internet.get("explained_rows") or [] if f"inet|{e['mac']}|{e['dest']}" == k), None)
+            if not x:
+                undo.pop(k, None)
+                continue
+            if pick == "block":
+                change.append((k, {"mac": x["mac"], "name": x["name"], "dest": x["dest"], "country": x["country"],
+                                   "pid": x["allowed_by"]["pid"], "rule": x["allowed_by"]["text"], "flows": x["flows"],
+                                   "last_seen": x["last_seen"], "port": x.get("port")}))
+            else:
+                st["decisions"][k] = {**keep, "intent": "allow", "kind": "keep", "inet": {"dest": x["dest"], "country": x["country"],
+                                      "name": x["name"], "mac": x["mac"], "rule": x["allowed_by"]["text"]}}
+                decided += 1
+        elif not c:
+            undo.pop(k, None)
+            continue
+        elif c["rules"] == ("allowed" if pick == "allow" else "blocked"):
+            st["decisions"][k] = {**keep, "intent": pick, "kind": "keep"}
+            decided += 1
+        elif pick == "block" and POLICY_PATTERN_IP.match(str(c["dst"]["mac"])) and c["reality"] == "blocked":
+            # No device answers there, so no rule can be made: Decide As
+            # Blocked is automatic (owner, 19 Nov 2026).
+            st["decisions"][k] = {**keep, "intent": "block", "kind": "nodev"}
+            decided += 1
+        else:
+            change.append((k, None))
+        st["row_picks"].pop(k, None)
+        st["nc_refs"].pop(k, None)
+    if not undo:
+        return None
+    row_of = {x["key"]: x for x in item["rows"]}
+    first = row_of[next(iter(undo))]
+    name = f"{first['src']['name']} → {first['dst']['name']}" + (f" · {first['port']}" if len(undo) == 1 else "")
+    if change:
+        kind = "internet" if item.get("internet") else "chose"
+        # An internet item becomes one Review item per site, each with
+        # its own site and rule (24 Nov 2026: one item carried only the
+        # first site, so once that was blocked the others were filed as
+        # blocked too, without being blocked).
+        parts = [[x] for x in change] if kind == "internet" else [change]
+        pair = [first["src"].get("mac") or first["src"]["name"], first["dst"].get("mac") or first["dst"]["name"]]
+        for part in parts:
+            r0 = row_of[part[0][0]]
+            fid = None if kind == "internet" else next(
+                (i for i, f in st["flow"].items() if f["stage"] == "review" and f["kind"] == "chose" and f.get("pair") == pair), None)
+            if fid:
+                f = st["flow"][fid]
+                f["keys"] += [k for k, _ in part if k not in f["keys"]]
+                f["refs"] = list(dict.fromkeys(f["refs"] + item["refs"]))
+                f["moved_at"] = now
+            else:
+                title = item["title"] if len(parts) == 1 else f"{r0['src']['name']} → {r0['dst']['name']}"
+                fid = policy_flow_new(st, kind, [k for k, _ in part], item["refs"], title, now,
+                                      why=item.get("why") if kind == "internet" else None,
+                                      **({"inet": {"mode": "block_dest", **part[0][1]}} if kind == "internet" else {"pair": pair}))
+            for k, inet in part:
+                r = row_of[k]
+                st["decisions"][k] = {"intent": pick, "at": now, "label": f"{r['src']['name']} → {r['dst']['name']} · {r['port']}",
+                                      "kind": "chose", "status": "review", "status_at": now, "flow": fid, "why": item.get("why"),
+                                      "picked_at": now, **({"inet": inet} if inet else {})}
+    return undo, name, decided, len(change)
 
 
 @app.post("/api/policy/undo")
