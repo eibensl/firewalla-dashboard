@@ -4,7 +4,7 @@ A home-network dashboard for a Firewalla router. It runs on your own NAS (in Doc
 
 This guide installs it on a **Synology NAS** with Container Manager. It takes about 30 minutes, most of it waiting.
 
-**The manual** (every page explained, with pictures): [docs/manual-light.pdf](docs/manual-light.pdf) (light pictures, 17 MB) or [docs/manual-scifi.pdf](docs/manual-scifi.pdf) (Sci-Fi pictures, 67 MB). The names, addresses and accounts in it are stand-ins from an example home network. For installing, updating and looking after it, follow this guide.
+**The manual** (every page explained, with pictures): [docs/manual-light.pdf](docs/manual-light.pdf) (light pictures, 17 MB) or [docs/manual-scifi.pdf](docs/manual-scifi.pdf) (Sci-Fi pictures, 69 MB). The names, addresses and accounts in it are stand-ins from an example home network. For installing, updating and looking after it, follow this guide.
 
 > Free, as it is, with no warranty and no promise of support. You use it at your own risk. Not made by, approved by or linked to Firewalla Inc.; "Firewalla" is their trademark. Your keys and passwords stay on your own NAS and are never sent to the author.
 
