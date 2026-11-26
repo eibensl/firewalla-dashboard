@@ -1515,6 +1515,15 @@
     UNIFI_WIFI.forEach(([name, what, form, front]) => unifiAdd(uid(name), `${name} · ${what}`, /bridge/i.test(what) ? "Bridges" : "Wi-Fi",
         form === "inwall" ? unifiInWall(front) : form === "bridgeswitch" ? omadaPanel({ ports: [["rj", "10G"], ...oRj(7, String, () => true, 2)], shell: "white", lcm: true }) : UNIFI_FORM[form]));
 
+    // Four more generic drawings (owner, 26 Nov 2026: the gaps in By Kind): 24- and
+    // 48-port rack switches in two rows, an outdoor access point, a 4G / 5G
+    // gateway (fits Starlink-style routers too). Listed under By Kind.
+    [["switch24", "Switch, 24 Ports (Rack)", omadaPanel({ ports: [...oRj(24), ...oSfp(4, i => String(24 + i))], rack: true })],
+     ["switch48", "Switch, 48 Ports (Rack)", omadaPanel({ ports: [...oRj(48), ...oSfp(4, i => String(48 + i))], rack: true })],
+     ["ap-outdoor", "Access Point, Outdoor", OMADA_AP_FORM.outdoor],
+     ["cellular", "4G / 5G Gateway", withAntennas(omadaPanel({ ports: [["rj", "WAN"], ...oRj(2, i => "LAN " + i)], shell: "white" }), [[.15, 1], [.85, 1]], "#d1d5db")]]
+        .forEach(([id, label, art]) => { GEAR_ART[id] = { label, w: art.w, h: art.h, draw: l => art.draw(omadaLights(l)) }; });
+
     // Lights for a maker drawing: port 1 = the link to the Firewalla port above, then the clients' ports.
     const omadaLights = l => Array.from({ length: 60 }, (_, i) => i === 0 ? { up: l.up, speed: l.color, act: l.act } : { up: l.up && i <= (l.lit || 0), speed: l.color, act: false });
     Object.entries(OMADA).forEach(([id, [kind, model, spec, antennas]]) => {

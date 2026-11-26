@@ -70,6 +70,7 @@ assessment_lock = threading.Lock()
 GEAR_PICTURES_FILE = os.environ.get("FIREWALLA_GEAR_PICTURES_FILE", "/data/gear-pictures.json")
 GEAR_PHOTO_DIR = os.environ.get("FIREWALLA_GEAR_PHOTO_DIR", "/data/gear-photos")
 GEAR_ART = ("modem", "router", "switch5", "switch8", "switch16", "ap-ceiling", "ap-wall", "mesh", "powerline",
+            "switch24", "switch48", "ap-outdoor", "cellular",
             # Firewalla's current models (part 2): for Firewalla units of that kind
             "fw-gold-pro", "fw-gold-plus-sfp", "fw-gold-plus", "fw-gold-se", "fw-orange", "fw-purple-se",
             "fw-switch-x", "fw-switch-se", "fw-ap7-desktop", "fw-ap7-ceiling")
