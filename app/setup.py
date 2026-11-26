@@ -40,6 +40,7 @@ import time
 import requests
 from fastapi import Body, Request, Response
 
+import core
 from core import BASE_URL, SYSTEM_URL, app, claude_worker, router_system
 from router import feature_settings
 
@@ -615,6 +616,22 @@ def api_setup_mail(request: Request, payload: dict = Body(default={})):
         return {"ok": False, "error": f"Saved, but the test email failed: {str(exc)[:200]}. Check it is an app password made by your "
                                      "email provider for this dashboard (not your normal password), and try again."}
     return {"ok": True, "note": f"A test email went to {to}. Check your inbox."}
+
+
+# ---------- after setup: rename the dashboard (to-do item 12, 26 Nov 2026) ----------
+
+@app.post("/api/settings/site-name")
+def api_settings_site_name(payload: dict = Body(default={})):
+    """The network's name from the Settings page: saved in settings.env and
+    shown at once in the menu and the browser tab (emails from the next
+    start)."""
+    name = str(payload.get("name") or "").strip()
+    if not name or len(name) > 40 or not re.fullmatch(r"[\w .,'&()\-]+", name):
+        return {"ok": False, "error": "Give your network a name of up to 40 letters, numbers and spaces."}
+    setup_write_settings({"FIREWALLA_SITE_NAME": name})
+    core.SITE_NAME = name
+    core.state.setdefault("site", {})["name"] = name
+    return {"ok": True}
 
 
 # ---------- step 6: Claude ----------

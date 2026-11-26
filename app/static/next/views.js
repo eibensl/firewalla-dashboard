@@ -5641,6 +5641,14 @@ It is in New Connections Review › 2 · Review. Show Me How on it gives the ste
                 return r;
             }
             if (action === "lists-refresh") return post("/api/lists/refresh", {});
+            // The network's name (to-do item 12, 26 Nov 2026): the menu, the browser tab and the emails.
+            if (action === "site-name-save") {
+                const name = (document.getElementById("siteNameBox")?.value || "").trim();
+                const r = await post("/api/settings/site-name", { name });
+                say(r.ok ? `Saved: the dashboard is now "${name} Network".` : r.error || "Couldn't save the name.");
+                if (r.ok) setTimeout(() => location.reload(), 600);
+                return r;
+            }
             // Daily Digest settings (D-1024): "on|1", the hour select ("hour|7"), "to" (the address box).
             if (action === "digest-set") {
                 const [what, v] = String(value).split("|");
@@ -5703,6 +5711,9 @@ It is in New Connections Review › 2 · Review. Show Me How on it gives the ste
                     <div class="st-verdict-main"><div class="st-headline">${headline}</div>
                         <div class="st-summary">The dashboard's own parts, Claude, the daily digest and your settings.</div></div>
                 </section>
+                <section class="st-box"><div class="st-head"><h2>Network Name</h2><span class="small muted">shown as "… Network" in the menu, the browser tab and the emails</span></div>
+                    <div class="q-ask-row"><input id="siteNameBox" class="gear-pick" maxlength="40" value="${F.esc(window.FirewallaDashboard?.state?.data?.site?.name || "")}" aria-label="Network name">
+                    ${btn("plain", "site-name-save", "1", "Save")}</div></section>
                 ${(() => {
                     const parts = (s.health || []).length, ok = parts - bad.length, asked = t.asked ?? 0;
                     return `<div class="ring-row">

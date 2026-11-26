@@ -192,6 +192,8 @@ Keep the key private, like a password: it is saved only on your NAS. To stop Cla
 * Open **http://NAS-ADDRESS:8180/setup** again and type the setup code. The code is in the container's log or in `config/setup_code.txt` (a new one after each restart). Click any step on the left to change it; keys and passwords take effect without a restart.
 * Advanced settings that the page doesn't show are in `config/settings.env` (see `settings.env.example`). After changing that file, restart the project in Container Manager.
 
+To rename your network, use **Network Name** at the top of the dashboard's **Settings** page: the menu and the browser tab change at once, and the emails from the next start.
+
 ---
 
 ## Updating to a New Version
