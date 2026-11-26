@@ -1006,7 +1006,13 @@
     };
     // Blinking activity lights stay in step between redraws.
     const blinkPhase = () => `animation-delay:-${(Date.now() % 600) / 1000}s`;
-    const busy = (rx, tx) => (F.num(rx) || 0) + (F.num(tx) || 0) > 0.02;
+    // How busy a port is, for its activity light (owner, 26 Nov 2026: faster
+    // the busier): false = idle, "light" = under 1 Mb/s (slow blink), true =
+    // the usual blink, "fast" = 50 Mb/s or more (quick flicker).
+    const busy = (rx, tx) => {
+        const n = (F.num(rx) || 0) + (F.num(tx) || 0);
+        return n <= 0.02 ? false : n < 1 ? "light" : n >= 50 ? "fast" : true;
+    };
 
     function ledLegend(extra = [], last = "Hover a port for details · click to open") {
         return `<div class="led-legend">
@@ -1026,7 +1032,7 @@
     // A small status light; blinking ones stay in step between redraws.
     //   blink: true = quick activity flicker, "slow" = calm status blink
     function led(x, y, w, h, color, blink) {
-        const cls = blink === "slow" ? "led-slow" : blink ? "led-act" : "";
+        const cls = blink === "slow" ? "led-slow" : blink === "fast" ? "led-act led-fast" : blink === "light" ? "led-act led-light" : blink ? "led-act" : "";
         const style = blink === "slow" ? `animation-delay:-${(Date.now() % 1600) / 1000}s` : blink ? blinkPhase() : "";
         const one = extra => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${Math.min(w, h) / 2}" fill="${color}" class="${cls}" style="${style}"${extra}/>`;
         return one("") + (color !== OFF ? one(` filter="url(#fw-glow)" opacity=".75"`) : "");
@@ -1045,6 +1051,513 @@
             ${led(x + 29.5, y + 4.5, 8, 2.6, s.up && s.act ? "#f59e0b" : OFF, s.up && s.act)}
             <rect class="hl" x="${x - 3}" y="${y - 3}" width="48" height="42" rx="5"/>`;
     }
+
+    // ----- Equipment pictures (D-1075 part 1, owner 26 Nov 2026) -----
+    // Our own drawings (no logos; maker photos are copyrighted) for gear that
+    // isn't Firewalla's, picked in Network Assessment › Your Equipment and
+    // shown on Topology. Each draws at its natural size; l = its lights:
+    // {up, color (link speed), act (busy()), lit (ports in use besides the
+    // uplink)}. Non-Firewalla gear reports nothing, so its lights follow the
+    // Firewalla port it hangs off.
+    const GEAR_BODY = `fill="url(#fw-shell)" stroke="#a3a8b0"`;
+    function miniJack(x, y, on, l) {
+        return `<rect x="${x}" y="${y}" width="24" height="20" rx="2" fill="#c9ccd1" stroke="#8a8f97"/>
+            <rect x="${x + 3}" y="${y + 5}" width="18" height="12" rx="1" fill="#16171a"/>
+            ${led(x + 3, y + 1.5, 6, 2.4, on ? speedColor(l.color, true) : OFF, false)}
+            ${led(x + 15, y + 1.5, 6, 2.4, on && l.act ? "#f59e0b" : OFF, on && l.act)}`;
+    }
+    const jacksRow = (x, y, n, l, gap = 30) => Array.from({ length: n }, (_, i) => miniJack(x + i * gap, y, l.up && i <= (l.lit || 0), l)).join("");
+    const gearSwitchArt = n => ({ label: `Switch, ${n} Ports`, w: 44 + n * 30, h: 64,
+        draw: l => `<rect width="${44 + n * 30}" height="64" rx="6" ${GEAR_BODY}/>
+            ${led(12, 14, 6, 6, l.up ? "#22c55e" : OFF, false)}${jacksRow(30, 22, n, l)}` });
+    const GEAR_ART = {
+        modem: { label: "Modem", w: 110, h: 170, draw: l => `<rect width="110" height="170" rx="10" ${GEAR_BODY}/>
+            ${["Power", "Down", "Up", "Online"].map((t, i) => `${led(18, 24 + i * 22, 14, 5, i === 0 || l.up ? "#22c55e" : OFF, i === 3 ? false : i > 0 && l.up && l.act)}
+                <text x="40" y="${30 + i * 22}" font-size="11" fill="#555">${t}</text>`).join("")}
+            ${miniJack(43, 128, l.up, l)}` },
+        router: { label: "Router", w: 300, h: 120, draw: l => `<path d="M60 44V6M240 44V6" stroke="#8a8f97" stroke-width="6" stroke-linecap="round"/>
+            <rect y="40" width="300" height="80" rx="10" ${GEAR_BODY}/>
+            ${led(20, 56, 8, 8, l.up ? "#22c55e" : OFF, false)}${led(36, 56, 8, 8, l.up ? "#22c55e" : OFF, l.up && l.act)}
+            ${jacksRow(90, 82, 5, l)}` },
+        switch5: gearSwitchArt(5), switch8: gearSwitchArt(8), switch16: gearSwitchArt(16),
+        "ap-ceiling": { label: "Access Point, Ceiling", w: 120, h: 120, draw: l => `<circle cx="60" cy="60" r="58" ${GEAR_BODY}/>
+            <circle cx="60" cy="60" r="40" fill="none" stroke="#c9ccd1"/>
+            <circle cx="60" cy="60" r="8" fill="${l.up ? "#3b82f6" : OFF}" class="${l.up && l.act ? "led-slow" : ""}"/>` },
+        "ap-wall": { label: "Access Point, Wall", w: 90, h: 140, draw: l => `<rect width="90" height="140" rx="10" ${GEAR_BODY}/>
+            ${led(37, 16, 16, 5, l.up ? "#3b82f6" : OFF, false)}${miniJack(12, 108, l.up, l)}${miniJack(54, 108, l.up && (l.lit || 0) > 0, l)}` },
+        mesh: { label: "Mesh Wi-Fi Node", w: 90, h: 150, draw: l => `<rect width="90" height="150" rx="26" ${GEAR_BODY}/>
+            <ellipse cx="45" cy="26" rx="24" ry="5" fill="#d9dce0"/>${led(39, 118, 12, 5, l.up ? "#22c55e" : OFF, l.up && l.act)}` },
+        // A slim plug-in adapter, as most powerline kits look: power,
+        // powerline and network lights, a Pair button, a vent.
+        powerline: { label: "Powerline Adapter", w: 120, h: 180, draw: l => `<rect width="120" height="180" rx="12" ${GEAR_BODY}/>
+            <path d="M120 22v120" stroke="#c9ccd1" stroke-width="2"/>
+            ${Array.from({ length: 36 }, (_, i) => `<circle cx="${70 + (i % 6) * 7}" cy="${92 + Math.floor(i / 6) * 13}" r="1.6" fill="#b5b9bf"/>`).join("")}
+            ${led(18, 104, 9, 5, "#22c55e", false)}<circle cx="38" cy="106.5" r="3.5" fill="none" stroke="#777"/>
+            ${led(18, 120, 9, 5, l.up ? "#22c55e" : OFF, l.up && l.act)}<path d="M34 125l4-4 4 4v3h-8z" fill="none" stroke="#777"/>
+            ${led(18, 136, 9, 5, l.up ? speedColor(l.color, true) : OFF, l.up && l.act)}<path d="M38 134v4M35 141h6M34 138h8" stroke="#777"/>
+            <rect x="16" y="150" width="30" height="22" rx="4" fill="#f4f5f7" stroke="#8a8f97"/>
+            <text x="31" y="165" font-size="10" text-anchor="middle" fill="#555">Pair</text>` },
+    };
+    // Firewalla's current models (D-1075 part 2, owner 26 Nov 2026), drawn from
+    // Firewalla's help center (port count, speed, numbering, default WAN,
+    // shape; researched 26 Nov 2026). Its pages never give the left-to-right
+    // order of the ports, so they are drawn in number order (owner's choice),
+    // except where the owner's own units show it. Each port has its live
+    // lights: link (speed colour) and activity (blinks faster when busier).
+    // fwLights(): one {up, speed, act} per port in panel order, and the unit's tone.
+    const FW_SHELL = { silver: `fill="url(#fw-shell)" stroke="#9aa0a8"`, white: `fill="#f4f5f7" stroke="#b5b9bf"` };
+    function sfpCage(x, y, l) {
+        return `<rect x="${x}" y="${y}" width="46" height="30" rx="2" fill="url(#fw-cage)" stroke="#7c818a"/>
+            <rect x="${x + 5}" y="${y + 9}" width="36" height="12" rx="1" fill="#121316"/>
+            ${led(x + 5, y + 3, 10, 3, speedColor(l.speed, l.up), false)}${led(x + 31, y + 3, 10, 3, l.up && l.act ? "#f59e0b" : OFF, l.up && l.act)}`;
+    }
+    const usbA = (x, y) => `<rect x="${x}" y="${y}" width="28" height="13" rx="1.5" fill="#c9ccd1" stroke="#7c818a"/><rect x="${x + 4}" y="${y + 3}" width="20" height="5" fill="#2a5bd7"/>`;
+    const usbC = (x, y, t) => `<rect x="${x}" y="${y}" width="22" height="9" rx="4.5" fill="#2b2d33" stroke="#7c818a"/>${t ? `<text x="${x + 11}" y="${y + 24}" font-size="11" text-anchor="middle" fill="#555">${t}</text>` : ""}`;
+    const toneLed = (x, y, tone, w = 9, h = 9) => led(x, y, w, h, { good: "#3b82f6", warn: "#f59e0b", bad: "#ef4444" }[tone] || OFF, tone === "bad" ? false : "slow");
+    // A front panel: its ports from x0, gap apart (RJ45 or SFP+), each with a
+    // label under it, a yellow mark under the default WAN, and its extras.
+    function fwPanel(c) {
+        return (L, tone) => {
+            let x = c.x0;
+            const ports = c.ports.map(([t, label], i) => {
+                const l = L[i] || { up: false }, px = x;
+                x += c.gap;
+                return (t === "sfp" ? sfpCage(px - 2, c.y + 3, l) : rj45(px, c.y, l))
+                    + `<text x="${px + 21}" y="${c.y + 52}" font-size="12" text-anchor="middle" fill="#555">${label}</text>`
+                    + (i === c.wan ? `<rect x="${px + 15}" y="${c.y + 57}" width="12" height="6" fill="#facc15"/>` : "");
+            }).join("");
+            return `<rect width="${c.w}" height="${c.h}" rx="${c.rx || 12}" ${FW_SHELL[c.shell || "silver"]}/>${ports}${(c.extras || "")}${c.status ? toneLed(c.status[0], c.status[1], tone) : ""}`;
+        };
+    }
+    const rjs = labels => labels.map(t => ["rj", t]);
+    const FW_ART = {
+        "fw-gold-pro": { label: "Firewalla Gold Pro", kind: "router", match: /gold\s*pro/i, w: 680, h: 134,
+            draw: fwPanel({ w: 680, h: 134, x0: 210, gap: 66, y: 44, wan: 3, ports: rjs(["1 · 10G", "2 · 2.5G", "3 · 2.5G", "4 · 10G"]),
+                extras: usbA(500, 56) + usbA(540, 56), status: [600, 60] }) },
+        "fw-gold-plus-sfp": { label: "Firewalla Gold Plus SFP", kind: "router", match: /gold\s*plus\s*sfp/i, w: 640, h: 120,
+            draw: fwPanel({ w: 640, h: 120, x0: 120, gap: 62, y: 38, wan: 3, ports: [...rjs(["1 · 10G", "2 · 2.5G", "3 · 2.5G", "4 · 10G"]), ["sfp", "5 · SFP+"]],
+                extras: usbA(470, 48) + usbA(510, 48), status: [580, 52] }) },
+        "fw-gold-plus": { label: "Firewalla Gold Plus", kind: "router", match: /gold\s*plus/i, w: 560, h: 120,
+            draw: fwPanel({ w: 560, h: 120, x0: 140, gap: 62, y: 38, wan: 3, ports: rjs(["1 · 2.5G", "2 · 2.5G", "3 · 2.5G", "4 · 2.5G"]),
+                extras: usbA(420, 48) + usbA(460, 48), status: [510, 52] }) },
+        "fw-gold-se": { label: "Firewalla Gold SE", kind: "router", match: /gold\s*se/i, w: 540, h: 110,
+            draw: fwPanel({ w: 540, h: 110, x0: 130, gap: 62, y: 32, wan: 3, ports: rjs(["1 · 2.5G", "2 · 1G", "3 · 1G", "4 · 2.5G"]),
+                extras: usbA(410, 42) + usbA(450, 42), status: [496, 46] }) },
+        "fw-orange": { label: "Firewalla Orange", kind: "router", match: /orange/i, w: 420, h: 110,
+            draw: fwPanel({ w: 420, h: 110, rx: 18, shell: "white", x0: 90, gap: 62, y: 30, wan: 1, ports: rjs(["LAN", "WAN"]),
+                extras: usbA(240, 40) + usbC(300, 42, "PWR"), status: [222, 44] }) },
+        "fw-purple-se": { label: "Firewalla Purple SE", kind: "router", match: /purple/i, w: 330, h: 100,
+            draw: fwPanel({ w: 330, h: 100, rx: 16, shell: "white", x0: 40, gap: 62, y: 26, wan: 1, ports: rjs(["LAN", "WAN"]),
+                extras: usbA(186, 36) + usbC(240, 38, "PWR"), status: [168, 40] }) },
+        "fw-switch-x": { label: "Firewalla Switch X", kind: "switch", ports: 12, w: 820, h: 116,
+            draw: fwPanel({ w: 820, h: 116, rx: 8, x0: 150, gap: 52, y: 34, ports: [...rjs(["1", "2", "3", "4", "5", "6", "7", "8"]), ...["9", "10", "11", "12"].map(t => ["sfp", t])],
+                extras: `<text x="40" y="96" font-size="11" fill="#555">PWR · STATUS</text>`, status: [60, 50] }) },
+        "fw-switch-se": { label: "Firewalla Switch SE", kind: "switch", ports: 10, w: 680, h: 100,
+            draw: fwPanel({ w: 680, h: 100, rx: 8, x0: 130, gap: 52, y: 26, ports: [...rjs(["1", "2", "3", "4", "5", "6", "7", "8"]), ...["9", "10"].map(t => ["sfp", t])],
+                extras: `<text x="34" y="86" font-size="11" fill="#555">PWR · STATUS</text>`, status: [50, 42] }) },
+        "fw-ap7-desktop": { label: "Firewalla AP7 Desktop", kind: "ap", w: 100, h: 150,
+            draw: (L, tone) => `<rect width="100" height="150" rx="22" ${FW_SHELL.white}/><rect x="14" y="12" width="72" height="8" rx="4" fill="#e4e6ea"/>${toneLed(44, 124, tone, 12, 5)}` },
+        // The AP7C as the owner's Topology shows it (apArt, 26 Nov 2026: "redraw the AP7C using the image
+        // on my Topology"): top view, a rounded square with the disc shading and a white rim, the round
+        // centre plate, the status light on the right edge; its rear ports eth1 (uplink, PoE in) and eth0
+        // beside it with live lights. No brand text.
+        "fw-ap7-ceiling": { label: "Firewalla AP7 Ceiling", kind: "ap", w: 330, h: 180,
+            draw: (L, tone) => `<rect x="14" y="14" width="152" height="152" rx="38" fill="url(#fw-disc)" filter="url(#fw-shadow)"/>
+                <rect x="14.5" y="14.5" width="151" height="151" rx="37.5" fill="none" stroke="#ffffff" stroke-opacity=".9"/>
+                <circle cx="90" cy="90" r="30" fill="#f4f5f7" stroke="#000" stroke-opacity=".05"/>
+                <rect x="163.5" y="83" width="3" height="14" rx="1.5" fill="#2a2c31"/>${toneLed(163.5, 83, tone, 3, 14)}
+                <text x="196" y="66" font-size="11" fill="#999">Rear ports</text>
+                ${["eth1", "eth0"].map((name, i) => `${rj45(196 + i * 66, 76, L[1 - i] || { up: false })}
+                    <text x="${217 + i * 66}" y="128" font-size="11" text-anchor="middle" fill="#bbb">${name}</text>
+                    <text x="${217 + i * 66}" y="142" font-size="9" text-anchor="middle" fill="#888">${i ? "Downstream" : "Uplink"}</text>`).join("")}` },
+    };
+    // Which model drawing a Firewalla unit gets: the one you picked, else (only
+    // where the dashboard has no photo of it, as in the shareable copy) the
+    // detected model: the router by its name, a switch by its port count.
+    let fwPhotosOk = true;
+    (() => { const i = new Image(); i.onerror = () => { fwPhotosOk = false; }; i.src = "/static/next/img/gold-pro-front.png"; })();
+    function fwArtFor(data, n) {
+        const pick = gearPicks(data)[n.id];
+        if (pick?.art) return FW_ART[pick.art]?.kind === n.kind ? FW_ART[pick.art] : null;
+        if (pick || fwPhotosOk) return null;
+        if (n.kind === "router") return Object.values(FW_ART).find(a => a.kind === "router" && a.match.test(routerSeen(data))) || null;
+        if (n.kind === "switch") {
+            const count = Object.keys(((data.switches || {})[n.id.slice(3)] || {}).ports || {}).length;
+            return Object.values(FW_ART).find(a => a.kind === "switch" && a.ports === count) || null;
+        }
+        return null;
+    }
+    function fwLights(data, n) {
+        const lit = (up, speed, rx, tx) => ({ up: !!up, speed, act: up && busy(rx, tx) });
+        if (n.kind === "router") return [routerPanelPorts(data).map(p => lit(Number(p.carrier) === 1, p.speed, p.rx_mbps, p.tx_mbps)), D.gearTone("router")];
+        if (n.kind === "switch") {
+            const sw = (data.switches || {})[n.id.slice(3)] || {};
+            return [Object.values(sw.ports || {}).sort((a, b) => String(a.port).localeCompare(String(b.port), undefined, { numeric: true }))
+                .map(p => lit(p.link_up, p.link_speed, p.rx_mbps, p.tx_mbps)), D.gearTone(sw)];
+        }
+        const ap = (data.access_points || {})[n.id.slice(3)] || {};
+        return [Object.entries(ap.eth_ports || {}).sort(([a], [b]) => a.localeCompare(b)).map(([, p]) => lit(p.connected, p.speed, 0, 0)), D.gearTone(ap)];
+    }
+    // On the map a model drawing takes the room the unit's picture took before.
+    const fwMapScale = (a, kind) => kind === "ap" ? 20 / a.h : NODE[kind][0] * ICON_SCALE[kind] / a.w;
+
+    // TP-Link Omada (D-1075 part 3, owner 26 Nov 2026): routers, hardware
+    // controllers and switches, from TP-Link's spec pages (port counts,
+    // speeds, roles, PoE; researched 26 Nov 2026). The pages give no
+    // left-to-right order, so ports are in number order: RJ45 first, then
+    // SFP / SFP+, as many rows as the port count needs (24 or more: two rows,
+    // odd ports on top). The owner's pictures correct a model when they come
+    // (the Fusion range: gunmetal body, black glass touchscreen front, ports
+    // on the back). No logos. Lights: port 1 is the link to the Firewalla
+    // port above (live), the next ports light for the clients behind it.
+    // A port: [type, label, poe]: "rj" RJ45, "sfp" SFP or SFP+.
+    const oRj = (n, label = i => String(i), poe = () => false, from = 1) => Array.from({ length: n }, (_, k) => ["rj", label(k + from), poe(k + from)]);
+    const oSfp = (n, label = i => "SFP" + (n > 1 ? " " + i : "")) => Array.from({ length: n }, (_, k) => ["sfp", label(k + 1)]);
+    const OMADA_SHELL = { silver: `fill="url(#fw-shell)" stroke="#9aa0a8"`, dark: `fill="#3d4148" stroke="#22252a"`, white: `fill="#f4f5f7" stroke="#b5b9bf"` };
+    function omadaPanel(c) {
+        const ports = c.ports, rj = ports.filter(x => x[0] === "rj"), sfps = ports.filter(x => x[0] === "sfp"), two = rj.length >= 24 || sfps.length >= 24;
+        const ink = c.shell === "dark" ? "#c9ccd1" : "#555";
+        const extraBox = (x, kind) => kind === "usb" ? usbA(x, 34)
+            : kind === "lcm" ? `<rect x="${x}" y="22" width="70" height="44" rx="4" fill="#0d0e10" stroke="#7c818a"/><rect x="${x + 6}" y="28" width="58" height="6" rx="2" fill="#3b82f6" fill-opacity=".6"/><rect x="${x + 6}" y="40" width="40" height="4" rx="2" fill="#6b7280"/>`
+            : kind === "bay" ? `<rect x="${x}" y="20" width="110" height="52" rx="3" fill="none" stroke="${ink}" stroke-opacity=".6"/><rect x="${x + 8}" y="40" width="94" height="6" rx="3" fill="${ink}" fill-opacity=".35"/>`
+            : `<rect x="${x}" y="30" width="34" height="26" rx="2" fill="#1d4ed8" fill-opacity=".25" stroke="#7c818a"/><text x="${x + 17}" y="68" font-size="9" text-anchor="middle" fill="${ink}">CONSOLE</text>`;
+        const extras = [...(c.usb ? ["usb"] : []), ...(c.console ? ["console"] : [])];
+        // Positions, left to right.
+        let x = 70;
+        const width = k => k === "lcm" ? 84 : k === "bay" ? 124 : 44;
+        const lead = [...(c.lcm ? ["lcm"] : []), ...(c.lead ? extras : [])].map(k => { const at = x; x += width(k); return [at, k]; });
+        if (lead.length) x += 10;
+        const place = new Map(), group = list => {
+            const cols = two && list[0]?.[0] === "rj" ? Math.ceil(list.length / 2) : two ? Math.ceil(list.length / 2) : list.length, gap = list[0]?.[0] === "sfp" ? 54 : 50;
+            list.forEach((pt, k) => place.set(pt, [x + (two ? Math.floor(k / 2) : k) * gap, two ? (k % 2 ? 86 : 22) : 28]));
+            if (list.length) x += cols * gap + 20;
+        };
+        (c.sfpFirst ? [sfps, rj] : [rj, sfps]).forEach(group);
+        const trail = [...(c.lead ? [] : extras), ...Array.from({ length: c.bays || 0 }, () => "bay")].map(k => { const at = x; x += width(k); return [at, k]; });
+        const w = c.w || x + 30, h = c.h || (two ? 150 : 100);
+        return {
+            w, h, draw: L => {
+                const body = ports.map((pt, i) => {
+                    const l = L[i] || { up: false }, [px, py] = place.get(pt), top = two && py < 60;
+                    return (pt[0] === "sfp" ? sfpCage(px - 2, py, l) : rj45(px, py, l))
+                        // A long label (e.g. "2 WAN/LAN") on two lines, so neighbours never run together.
+                        + (String(pt[1]).length > 5 && String(pt[1]).includes(" ")
+                            ? `<text x="${px + 21}" y="${py + (top ? -16 : 48)}" font-size="10" text-anchor="middle" fill="${ink}">${String(pt[1]).split(/ (.*)/s).slice(0, 2).map((t, k) => `<tspan x="${px + 21}" dy="${k ? 11 : 0}">${F.esc(t)}</tspan>`).join("")}</text>`
+                            : `<text x="${px + 21}" y="${py + (top ? -4 : 50)}" font-size="11" text-anchor="middle" fill="${ink}">${F.esc(pt[1])}</text>`)
+                        + (pt[2] ? `<text x="${px + 21}" y="${py + (top ? 50 : 70)}" font-size="9" text-anchor="middle" fill="#f59e0b">PoE</text>` : "");
+                }).join("");
+                const leds = `${led(20, 24, 8, 8, "#22c55e", false)}<text x="32" y="32" font-size="10" fill="${ink}">PWR</text>
+                    ${led(20, 42, 8, 8, (L[0] || {}).up ? "#22c55e" : OFF, (L[0] || {}).up ? "slow" : false)}<text x="32" y="50" font-size="10" fill="${ink}">SYS</text>`;
+                return `<rect width="${w}" height="${h}" rx="${c.rack ? 6 : 12}" ${OMADA_SHELL[c.shell || "silver"]}/>
+                    ${leds}${[...lead, ...trail].map(([ex, k]) => extraBox(ex, k)).join("")}${body}`;
+            }
+        };
+    }
+    // Antennas on top of a panel (the Wi-Fi gateways, owner's pictures 26 Nov
+    // 2026): [x share of the width, thick] each; thick = the 4G ones at the sides.
+    function withAntennas(art, list, colour = "#2b2e33") {
+        const UP = 110;
+        return { w: art.w, h: art.h + UP, draw: L => list.map(([at, thick]) => {
+            const x = art.w * at;
+            return thick ? `<rect x="${x - 9}" y="${UP - 92}" width="18" height="100" rx="9" fill="${colour}"/>`
+                : `<path d="M${x} ${UP + 6}V${UP - 104}" stroke="${colour}" stroke-width="7" stroke-linecap="round"/>`;
+        }).join("") + `<g transform="translate(0 ${UP})">${art.draw(L)}</g>` };
+    }
+    // The outdoor 4G gateway: a tall white box, two antennas, its ports underneath (not drawn).
+    const outdoorArt = { w: 130, h: 330, draw: L => `<path d="M38 120V8M92 120V8" stroke="#e5e7eb" stroke-width="12" stroke-linecap="round"/>
+        <rect x="5" y="110" width="120" height="215" rx="14" fill="#f4f5f7" stroke="#b5b9bf"/>
+        ${led(58, 150, 14, 5, (L[0] || {}).up ? "#22c55e" : OFF, (L[0] || {}).up && (L[0] || {}).act)}` };
+    // The Fusion gateways (owner's pictures, 26 Nov 2026): the front, a black
+    // glass touchscreen with app tiles and a round button; where the back
+    // ports are confirmed, a row of them under it, marked Back.
+    function fusionArt(n) {
+        const back = n ? omadaPanel({ ports: [["rj", "WAN"], ...oRj(8, i => String(i), () => true)], shell: "dark", x0: 60, h: 90, extraW: 20 }) : null;
+        const w = back ? Math.max(460, back.w) : 460, top = 120;
+        return { w, h: top + (back ? back.h + 22 : 0), draw: L => {
+            const tiles = ["#22c55e", "#3b82f6", "#6366f1", "#38bdf8", "#e5e7eb", "#f59e0b"].map((c, i) => `<rect x="${w / 2 - 66 + i * 23}" y="56" width="17" height="17" rx="4" fill="${c}"/>`).join("");
+            return `<rect width="${w}" height="${top}" rx="18" fill="#5b5f66" stroke="#2b2e33"/><rect y="40" width="${w}" height="${top - 40}" rx="14" fill="#0d0e10"/>
+                ${tiles}${led(w - 40, 14, 14, 14, (L[0] || {}).up ? "#e5e7eb" : OFF, false)}
+                ${back ? `<text x="8" y="${top + 16}" font-size="11" fill="#999">Back</text><g transform="translate(0 ${top + 22})">${back.draw(L)}</g>` : ""}`;
+        } };
+    }
+    const OMADA = {
+        // Routers and gateways
+        // (ER8411, ER7412-M2, ER707-M2 and ER7406 checked against the owner's pictures, 26 Nov 2026.)
+        "omada-er605": ["Router", "ER605", { ports: oRj(5, i => i + " " + ["WAN", "WAN/LAN", "WAN/LAN", "LAN", "LAN"][i - 1]), usb: true, shell: "dark" }],
+        "omada-er707-m2": ["Router", "ER707-M2", { ports: [["rj", "2.5G WAN"], ["rj", "2.5G W/L"], ...oRj(4, i => "W/L " + i), ...oSfp(1)], usb: true, lead: true, shell: "dark" }],
+        "omada-er7406": ["Router", "ER7406", { ports: [...oRj(6), ...oSfp(1)], usb: true, lead: true, sfpFirst: true, shell: "dark" }],
+        // The Wi-Fi gateways (owner's pictures): lights, USB, SFP (port 1), port 2 WAN, ports 3-6.
+        "omada-er706w": ["Router", "ER706W", { ports: [["rj", "2 WAN"], ...oRj(4, i => String(i), () => false, 3), ...oSfp(1, () => "1 SFP")], usb: true, lead: true, sfpFirst: true, shell: "dark" }, [[.2], [.5], [.8]]],
+        "omada-er706w-4g": ["Router", "ER706W-4G", { ports: [["rj", "2 WAN"], ...oRj(4, i => String(i), () => false, 3), ...oSfp(1, () => "1 SFP")], usb: true, lead: true, sfpFirst: true, shell: "dark" }, [[.04, 1], [.25], [.5], [.75], [.96, 1]]],
+        "omada-er706wp-4g": ["Router", "ER706WP-4G", { ports: [["rj", "2 WAN"], ...oRj(4, i => String(i), () => false, 3), ...oSfp(1, () => "1 SFP")], usb: true, lead: true, sfpFirst: true, shell: "dark" }, [[.04, 1], [.25], [.5], [.75], [.96, 1]]],
+        "omada-er703wp-4g-outdoor": ["Router", "ER703WP-4G-Outdoor", "outdoor"],
+        "omada-er7206": ["Router", "ER7206", { ports: [["rj", "WAN"], ...oRj(4, i => "W/L " + i), ...oSfp(1)], usb: true, shell: "dark" }],
+        "omada-g36": ["Router", "G36 (Omada Pro)", { ports: [["rj", "WAN"], ...oRj(4, i => "W/L " + i), ...oSfp(1)], usb: true, shell: "dark" }],
+        "omada-er7212pc": ["Router", "ER7212PC", { ports: [["rj", "3 WAN"], ["rj", "4 W/L"], ...oRj(8, String, () => true, 5), ...oSfp(2, i => i + " SFP")], sfpFirst: true, shell: "dark" }],   // owner's picture
+        "omada-er7412-m2": ["Router", "ER7412-M2", { ports: [["rj", "2.5G 1"], ["rj", "2.5G 2"], ...oRj(8, i => String(i + 2)), ...oSfp(2)], usb: true, console: true, lead: true, rack: true, shell: "dark" }],
+        "omada-er8411": ["Router", "ER8411", { ports: [...oRj(8, i => String(i)), ...oSfp(1), ["sfp", "10G WAN"], ["sfp", "10G W/L"]], usb: true, console: true, lead: true, sfpFirst: true, rack: true, shell: "dark" }],
+        "omada-g611": ["Router", "G611 (Omada Pro)", { ports: [...oRj(8, i => String(i)), ...oSfp(1), ["sfp", "10G WAN"], ["sfp", "10G W/L"]], usb: true, console: true, lead: true, sfpFirst: true, rack: true, shell: "dark" }],
+        "omada-fusion-25g-poe": ["Router", "Fusion 2.5G PoE", "fusion9"],
+        "omada-fusion-pro-25g-poe": ["Router", "Fusion Pro 2.5G PoE", "fusion9"],
+        "omada-fusion-25g": ["Router", "Fusion 2.5G", "fusion"],
+        "omada-fusion-pro-25g": ["Router", "Fusion Pro 2.5G", "fusion"],
+        "omada-fusion-gplus": ["Router", "Fusion G+", "fusion"],
+        // Hardware controllers
+        // (all four checked against the owner's pictures, 26 Nov 2026: dark bodies)
+        "omada-oc200": ["Controller", "OC200", { ports: [["rj", "1 PoE IN"], ["rj", "2"]], usb: true, shell: "dark" }],
+        "omada-oc220": ["Controller", "OC220", { ports: [["rj", "1 PoE IN"], ["rj", "2"]], usb: true, shell: "dark" }],
+        "omada-oc300": ["Controller", "OC300", { ports: oRj(2), usb: true, rack: true, shell: "dark", w: 520 }],
+        "omada-oc400": ["Controller", "OC400", { ports: [...oRj(4), ...oSfp(2, i => "10G " + i)], usb: true, console: true, lead: true, sfpFirst: true, rack: true, shell: "dark" }],
+        // Switches
+        "omada-es205g": ["Switch", "ES205G", { ports: oRj(5) }],
+        "omada-es208gp": ["Switch", "ES208GP", { ports: oRj(8, String, () => true) }],
+        "omada-es210gmp": ["Switch", "ES210GMP", { ports: [...oRj(8, String, () => true), ["rj", "9"], ...oSfp(1, () => "10 SFP")] }],
+        "omada-es206xpp-m2": ["Switch", "ES206XPP-M2", { ports: [...oRj(5, i => i + " 2.5G", i => i <= 4), ...oSfp(1, () => "10G SFP+")] }],
+        "omada-es228gmp": ["Switch", "ES228GMP", { ports: [...oRj(26, String, i => i <= 24), ...oSfp(2)], rack: true }],
+        "omada-sg2008p": ["Switch", "SG2008P", { ports: oRj(8, String, i => i <= 4) }],
+        "omada-sg2210p": ["Switch", "SG2210P", { ports: [...oRj(8, String, () => true), ...oSfp(2, i => "SFP " + (i + 8))] }],
+        "omada-sg2210xmp-m2": ["Switch", "SG2210XMP-M2", { ports: [...oRj(8, i => i + " 2.5G", () => true), ...oSfp(2, i => "10G " + (i + 8))] }],
+        "omada-sg2218": ["Switch", "SG2218", { ports: [...oRj(16), ...oSfp(2, i => "SFP " + (i + 16))], rack: true }],
+        "omada-sg2428p": ["Switch", "SG2428P", { ports: [...oRj(24, String, () => true), ...oSfp(4, i => String(i + 24))], rack: true }],
+        "omada-sg3428": ["Switch", "SG3428", { ports: [...oRj(24), ...oSfp(4, i => String(i + 24))], rack: true, console: true }],
+        "omada-sg3428x": ["Switch", "SG3428X", { ports: [...oRj(24), ...oSfp(4, i => "10G " + (i + 24))], rack: true, console: true }],
+        "omada-sg3428xmp": ["Switch", "SG3428XMP", { ports: [...oRj(24, String, () => true), ...oSfp(4, i => "10G " + (i + 24))], rack: true, console: true }],
+        "omada-sg3452p": ["Switch", "SG3452P", { ports: [...oRj(48, String, () => true), ...oSfp(4, i => String(i + 48))], rack: true, console: true }],
+        "omada-sg3210xhp-m2": ["Switch", "SG3210XHP-M2", { ports: [...oRj(8, i => i + " 2.5G", () => true), ...oSfp(2, i => "10G " + (i + 8))], rack: true, console: true }],
+        "omada-sx3008f": ["Switch", "SX3008F", { ports: oSfp(8, i => "10G " + i), rack: true, console: true }],
+        "omada-sx3016f": ["Switch", "SX3016F", { ports: oSfp(16, i => "10G " + i), rack: true, console: true }],
+    };
+    // Omada access points and bridges (owner's "Wireless | TP-Link" catalogue
+    // page, 26 Nov 2026: every current model and its form). Their ports are
+    // on the back or underneath, so each is drawn by its form, with its
+    // status light (lit while the Firewalla port above has a link, blinking
+    // with its traffic).
+    const apLight = (L, x, y, w, h) => led(x, y, w, h, (L[0] || {}).up ? "#22c55e" : OFF, (L[0] || {}).up && (L[0] || {}).act);
+    const OMADA_AP_FORM = {
+        ceiling: { w: 150, h: 150, draw: L => `<circle cx="75" cy="75" r="73" fill="#f4f5f7" stroke="#b5b9bf"/><circle cx="75" cy="75" r="50" fill="none" stroke="#e1e3e7"/>${apLight(L, 68, 68, 14, 14)}` },
+        wall: { w: 100, h: 150, draw: L => `<rect width="100" height="150" rx="10" fill="#f4f5f7" stroke="#b5b9bf"/><rect x="12" y="14" width="76" height="90" rx="6" fill="none" stroke="#e1e3e7"/>${apLight(L, 42, 120, 16, 5)}` },
+        outdoor: { w: 110, h: 220, draw: L => `<rect width="110" height="220" rx="12" fill="#f4f5f7" stroke="#b5b9bf"/><rect x="10" y="190" width="90" height="18" rx="3" fill="#e1e3e7"/>${apLight(L, 47, 30, 16, 5)}` },
+        directional: { w: 170, h: 170, draw: L => `<rect width="170" height="170" rx="14" fill="#f4f5f7" stroke="#b5b9bf"/><rect x="20" y="20" width="130" height="130" rx="8" fill="none" stroke="#e1e3e7"/>${apLight(L, 77, 152, 16, 5)}` },
+        bridge: { w: 120, h: 180, draw: L => `<rect width="120" height="180" rx="16" fill="#f4f5f7" stroke="#b5b9bf"/><ellipse cx="60" cy="80" rx="40" ry="55" fill="none" stroke="#e1e3e7"/>${apLight(L, 52, 160, 16, 5)}` },
+        desktop: { w: 110, h: 170, draw: L => `<rect width="110" height="170" rx="20" fill="#f4f5f7" stroke="#b5b9bf"/>${apLight(L, 47, 140, 16, 5)}` },
+    };
+    const OMADA_APS = [
+        // Ceiling
+        ["AP9788", "Campus BE22000, Ceiling", "ceiling"], ["AP9770", "Campus BE11000, Ceiling", "ceiling"],
+        ["EAP787", "BE15000 Wi-Fi 7, Ceiling", "ceiling"], ["EAP783", "BE22000 Wi-Fi 7, Ceiling", "ceiling"], ["EAP773", "BE11000 Wi-Fi 7, Ceiling", "ceiling"],
+        ["EAP772", "BE11000 Wi-Fi 7, Ceiling", "ceiling"], ["EAP770", "BE11000 Wi-Fi 7, Ceiling", "ceiling"], ["EAP727", "BE5000 Wi-Fi 7, Ceiling", "ceiling"],
+        ["EAP723", "BE5000 Wi-Fi 7, Ceiling", "ceiling"], ["EAP720", "BE5000 Wi-Fi 7, Ceiling", "ceiling"], ["EAP683 UR", "AX6000 Wi-Fi 6, Ceiling", "ceiling"],
+        ["EAP673", "AX5400 Wi-Fi 6, Ceiling", "ceiling"], ["EAP670", "AX5400 Wi-Fi 6, Ceiling", "ceiling"], ["EAP660 HD", "AX3600 Wi-Fi 6, Ceiling", "ceiling"],
+        ["EAP653", "AX3000 Wi-Fi 6, Ceiling", "ceiling"], ["EAP653 UR", "AX3000 Wi-Fi 6, Ceiling", "ceiling"], ["EAP650", "AX3000 Wi-Fi 6, Ceiling", "ceiling"],
+        ["EAP620 HD", "AX1800 Wi-Fi 6, Ceiling", "ceiling"], ["EAP613", "AX1800 Wi-Fi 6, Ceiling", "ceiling"], ["EAP610", "AX1800 Wi-Fi 6, Ceiling", "ceiling"],
+        ["EAP225", "AC1350, Ceiling", "ceiling"],
+        // Wall plate
+        ["EAP775-Wall", "BE11000 Wi-Fi 7, Wall Plate", "wall"], ["EAP725-Wall", "BE5000 Wi-Fi 7, Wall Plate", "wall"], ["EAP655-Wall", "AX3000 Wi-Fi 6, Wall Plate", "wall"],
+        ["EAP615-Wall", "AX1800 Wi-Fi 6, Wall Plate", "wall"], ["EAP235-Wall", "AC1200, Wall Plate", "wall"],
+        // Outdoor
+        ["EAP775-Outdoor", "BE11000 Wi-Fi 7, Outdoor", "outdoor"], ["EAP772-Outdoor", "BE11000 Wi-Fi 7, Outdoor", "outdoor"], ["EAP725-Outdoor", "BE5000 Wi-Fi 7, Outdoor", "outdoor"],
+        ["EAP650-Outdoor", "AX3000 Wi-Fi 6, Outdoor", "outdoor"], ["EAP650 D120-Outdoor", "AX3000 Wi-Fi 6, Outdoor, Directional", "directional"],
+        ["EAP650 D30-Outdoor", "AX3000 Wi-Fi 6, Outdoor, Directional", "directional"], ["EAP625-Outdoor HD", "AX1800 Wi-Fi 6, Outdoor", "outdoor"],
+        ["EAP610-Outdoor", "AX1800 Wi-Fi 6, Outdoor", "outdoor"], ["EAP603-Outdoor", "AX1800 Wi-Fi 6, Outdoor", "outdoor"],
+        ["EAP225-Outdoor", "AC1200, Outdoor", "outdoor"], ["EAP110-Outdoor", "300 Mbps, Outdoor", "outdoor"],
+        // Wireless bridges
+        ["Beam Bridge 7 KIT", "Wi-Fi 7 Bridge", "bridge"], ["Sector Bridge 5", "5 GHz Central Hub", "bridge"], ["Flex Bridge 5", "5 GHz Bridge", "bridge"],
+        ["Beam Bridge 5 UR KIT", "5 GHz Ultra-Range Bridge", "bridge"], ["EAP215-Bridge KIT", "5 GHz Long-Range Bridge", "bridge"],
+        ["EAP211-Bridge KIT", "5 GHz Bridge", "bridge"], ["EAP115-Bridge KIT", "5 GHz Long-Range Bridge", "bridge"], ["EAP100-Bridge KIT", "2.4 GHz Bridge", "bridge"],
+        // Desktop
+        ["EAP650-Desktop", "AX3000 Wi-Fi 6, Desktop", "desktop"], ["EAP650GP-Desktop", "AX3000 Wi-Fi 6, Desktop GPON", "desktop"],
+    ];
+
+    // The rest of the Omada switch catalogue (owner's "Switches | TP-Link" page,
+    // 26 Nov 2026), from each model's one-line description: [model, RJ45
+    // ports, their speed, PoE ports, SFP cages, their speed]. Where a line
+    // gives only the total (e.g. "28-Port ... 24-Port PoE+"), Omada's usual
+    // split is used (24 RJ45 + 4 SFP). Models drawn above from their spec
+    // pages keep that drawing.
+    const OMADA_SWITCHES = [
+        // Campus
+        ["S7500-24Y4C", 0, "", 0, 28, i => i <= 24 ? "25G" : "100G"], ["S7500-26XF6Y", 0, "", 0, 32, i => i <= 26 ? "10G" : "25G"],
+        ["S6500-48MPP6Y", 48, "2.5G", 48, 6, "25G"], ["S6500-24MPP4Y", 24, "2.5G", 24, 4, "25G"],
+        ["S6500-48GP6XF", 48, "", 48, 6, "10G"], ["S6500-48G6XF", 48, "", 0, 6, "10G"], ["S6500-24GP4XF", 24, "", 24, 4, "10G"], ["S6500-24G4XF", 24, "", 0, 4, "10G"],
+        // Aggregation
+        ["SX6632YF", 0, "", 0, 32, i => i <= 26 ? "10G" : "25G"], ["SX3032F", 0, "", 0, 32, "10G"], ["SG3428XF", 0, "", 0, 28, i => i <= 24 ? "SFP" : "10G"],
+        // Access Max
+        ["SX3832MPP", 24, "10G", 24, 8, "10G"], ["SX3832", 24, "10G", 0, 8, "10G"], ["SX3206HPP", 4, "10G", 4, 2, "10G"],
+        // Access Pro
+        ["SG3428XPP-M2", 24, "2.5G", 24, 4, "10G"], ["SG3428X-M2", 24, "2.5G", 0, 4, "10G"], ["SG3218XP-M2", 16, "2.5G", 16, 2, "10G"], ["SG3210X-M2", 8, "2.5G", 0, 2, "10G"],
+        // Access Plus
+        ["SG5452XMPP", 48, "", 48, 4, "10G"], ["SG5452X", 48, "", 0, 4, "10G"], ["SG5428XMPP", 24, "", 24, 4, "10G"], ["SG5428X", 24, "", 0, 4, "10G"],
+        ["SG3452XMPP", 48, "", 48, 4, "10G"], ["SG3452XP", 48, "", 48, 4, "10G"], ["SG3452X", 48, "", 0, 4, "10G"], ["SG3428XMPP", 24, "", 24, 4, "10G"],
+        ["SG6654XHP", 48, "", 48, 6, "10G"], ["SG6654X", 48, "", 0, 6, "10G"], ["SG6428XHP", 24, "", 24, 4, "10G"], ["SG6428X", 24, "", 0, 4, "10G"],
+        // Access
+        ["SG2005P-PD", 5, "", 4, 0], ["SG3452", 48, "", 0, 4, "SFP"], ["SG3428MP", 24, "", 24, 4, "SFP"], ["SG3210", 8, "", 0, 2, "SFP"],
+        ["SG2452LP", 48, "", 32, 4, "SFP"], ["SG2428LP", 24, "", 16, 4, "SFP"], ["SG2218P", 16, "", 16, 2, "SFP"], ["SG2016P", 16, "", 8, 0],
+        ["SG2210MP", 8, "", 8, 2, "SFP"], ["SG2008", 8, "", 0, 0], ["SG2206MP", 6, "", 4, 0],
+        // Agile (Easy Managed)
+        ["ES210XPP-M2", 8, "2.5G", 8, 2, "10G"], ["ES210X-M2", 8, "2.5G", 0, 2, "10G"], ["ES206X-M2", 5, "2.5G", 0, 1, "10G"],
+        ["ES228GP", 26, "", 24, 2, "SFP"], ["ES224G", 24, "", 0, 0], ["ES220GP", 18, "", 16, 2, "SFP"], ["ES220GMP", 18, "", 16, 2, "SFP"],
+        ["ES216G", 16, "", 0, 0], ["ES210GP", 9, "", 8, 1, "SFP"], ["ES208G", 8, "", 0, 0], ["ES206GP", 6, "", 4, 0], ["ES205GP", 5, "", 4, 0],
+        // Unmanaged
+        ["DS1024GE", 24, "", 0, 0], ["DS1016GE", 16, "", 0, 0], ["DS108GE", 8, "", 0, 0], ["DS105GE", 5, "", 0, 0],
+        ["DS1008X", 8, "10G", 0, 0], ["DS105X", 5, "10G", 0, 0], ["DS108G-M2", 8, "2.5G", 0, 0], ["DS105G-M2", 5, "2.5G", 0, 0],
+        ["DS1024G", 24, "", 0, 0], ["DS1016G", 16, "", 0, 0], ["DS110GMP", 10, "", 8, 0], ["DS108G", 8, "", 0, 0],
+        ["DS106GPP", 6, "", 4, 0], ["DS106P", 6, "100M", 4, 0], ["DS105G", 5, "", 0, 0], ["DS111P", 11, "", 8, 0],
+        ["DS1018GMP", 18, "", 16, 0], ["DS108GP", 8, "", 8, 0], ["DS105GP", 5, "", 4, 0],
+        // Industrial
+        ["IES210GPP", 8, "", 8, 2, "SFP"], ["IES206GPP", 6, "", 4, 0], ["IES208G", 8, "", 0, 0], ["IES206G", 6, "", 0, 0],
+    ];
+    OMADA_SWITCHES.forEach(([model, rj, speed, poe, sfp = 0, sfpSpeed = "SFP"]) => {
+        const id = "omada-" + model.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+        if (OMADA[id]) return;
+        const sl = typeof sfpSpeed === "function" ? sfpSpeed : () => sfpSpeed;
+        const what = [rj ? `${rj}× ${speed || "1G"}${poe ? ` (${poe} PoE)` : ""}` : "", sfp ? `${sfp}× ${typeof sfpSpeed === "function" ? "SFP+/SFP28" : sfpSpeed === "SFP" ? "SFP" : sfpSpeed + " SFP"}` : ""].filter(Boolean).join(" + ");
+        OMADA[id] = ["Switch", `${model} · ${what}`, { ports: [...oRj(rj, String, i => i <= poe), ...oSfp(sfp, i => `${rj + i}${sl(i) === "SFP" ? "" : " " + sl(i)}`)], rack: rj + sfp >= 16, console: rj + sfp >= 24 && !model.startsWith("DS") }];
+    });
+
+    // Ubiquiti UniFi (D-1075 part 3, owner 26 Nov 2026: the cloud gateways,
+    // switching and Wi-Fi pages on ui.com), from techspecs.ui.com (port
+    // counts, speeds, default WAN, PoE, screens, drive bays). Its pages give
+    // no port order or colour: silver bodies, the small front touchscreen
+    // where the model has one, ports in number order with the SFP cages at
+    // the right, until the owner's pictures say otherwise. Towers and small
+    // boxes: the front with its screen, the back's ports in a row under it.
+    function frontBack(front, back) {
+        return { w: Math.max(front.w, back.w), h: front.h + back.h + 22, draw: L => `${front.draw(L)}<text x="6" y="${front.h + 16}" font-size="11" fill="#999">Back</text><g transform="translate(0 ${front.h + 22})">${back.draw(L)}</g>` };
+    }
+    const uLight = (L, x, y, w, h) => led(x, y, w, h, (L[0] || {}).up ? "#3b82f6" : OFF, (L[0] || {}).up && (L[0] || {}).act);
+    const uScreen = (x, y, w, h) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="#0d0e10"/><rect x="${x + 6}" y="${y + 6}" width="${w * .6}" height="${Math.max(4, h * .14)}" rx="2" fill="#3b82f6" fill-opacity=".6"/>`;
+    const UNIFI_FRONT = {
+        tower: { w: 120, h: 200, draw: L => `<rect width="120" height="200" rx="56" fill="#f4f5f7" stroke="#b5b9bf"/>${uScreen(36, 40, 48, 26)}${uLight(L, 52, 176, 16, 5)}` },
+        tower5g: { w: 120, h: 240, draw: L => `<rect width="120" height="240" rx="18" fill="#f4f5f7" stroke="#b5b9bf"/>${uScreen(14, 24, 92, 150)}${uLight(L, 52, 214, 16, 5)}` },
+        cube: { w: 130, h: 130, draw: L => `<rect width="130" height="130" rx="22" fill="#f4f5f7" stroke="#b5b9bf"/>${uScreen(40, 44, 50, 26)}${uLight(L, 57, 100, 16, 5)}` },
+    };
+    const uRjBack = (n, label = String) => omadaPanel({ ports: oRj(n, label), shell: "white", x0: 40, h: 90, extraW: 20 });
+    const UNIFI_GATEWAYS = {
+        "unifi-ucg-ultra": ["Cloud Gateway Ultra (UCG-Ultra)", { ports: [["rj", "WAN 2.5G"], ...oRj(4)], lcm: true, shell: "white" }],
+        "unifi-ucg-max": ["Cloud Gateway Max (UCG-Max)", { ports: [["rj", "WAN 2.5G"], ...oRj(4, i => i + " 2.5G")], lcm: true, shell: "white" }],
+        "unifi-ucg-fiber": ["Cloud Gateway Fiber (UCG-Fiber)", { ports: [...oRj(4, i => i + " 2.5G"), ["rj", "5 10G"], ...oSfp(2, i => "SFP+ " + i)], lcm: true, shell: "white" }],
+        "unifi-ucg-industrial": ["Cloud Gateway Industrial (UCG-Industrial)", { ports: [...oRj(4, i => i + " 2.5G", () => true), ["rj", "5 10G", true], ...oSfp(1, () => "SFP+")], shell: "silver" }],
+        "unifi-udr7": ["Dream Router 7 (UDR7)", frontBack(UNIFI_FRONT.tower, omadaPanel({ ports: [...oRj(4, i => i + " 2.5G", i => i === 1), ...oSfp(1, () => "SFP+")], shell: "white", x0: 40, h: 90, extraW: 20 }))],
+        "unifi-udr-5g-max": ["Dream Router 5G Max (UDR-5G-Max)", frontBack(UNIFI_FRONT.tower5g, omadaPanel({ ports: [...oRj(4, i => i + " 2.5G", i => i === 1), ...oSfp(1, () => "SFP+")], shell: "white", x0: 40, h: 90, extraW: 20 }))],
+        "unifi-udr": ["Dream Router (UDR)", frontBack(UNIFI_FRONT.tower, omadaPanel({ ports: [["rj", "WAN"], ...oRj(5, String, i => i <= 2)], shell: "white", x0: 40, h: 90, extraW: 20 }))],
+        "unifi-ux7": ["UniFi Express 7 (UX7)", frontBack(UNIFI_FRONT.cube, uRjBack(2, i => i === 1 ? "WAN 10G" : "2.5G"))],
+        "unifi-ux": ["UniFi Express (UX)", frontBack(UNIFI_FRONT.cube, uRjBack(3, i => i === 1 ? "WAN" : String(i)))],
+        "unifi-udm-pro": ["Dream Machine Pro (UDM-Pro)", { ports: [...oRj(9), ...oSfp(2, i => "SFP+ " + i)], lcm: true, bays: 1, rack: true }],
+        "unifi-udm-se": ["Dream Machine SE (UDM-SE)", { ports: [...oRj(8, String, () => true), ["rj", "9 2.5G"], ...oSfp(2, i => "SFP+ " + i)], lcm: true, bays: 1, rack: true }],
+        "unifi-udm-pro-max": ["Dream Machine Pro Max (UDM-Pro-Max)", { ports: [...oRj(8), ["rj", "9 2.5G"], ...oSfp(2, i => "SFP+ " + i)], lcm: true, bays: 2, rack: true }],
+        "unifi-udm-beast": ["Dream Machine Beast (UDM-Beast)", { ports: [...oRj(2, i => i + " 1G"), ...oRj(8, i => i + " 10G", () => false, 3), ...oSfp(2, i => "SFP+ " + i), ...oSfp(2, i => "SFP28 " + i)], lcm: true, bays: 2, console: true, rack: true }],
+        "unifi-udw": ["Dream Wall (UDW)", { ports: [...oRj(17, String, i => i <= 12), ["rj", "18 2.5G"], ...oSfp(2, i => "SFP+ " + i)], lcm: true, shell: "white", h: 130 }],
+        "unifi-efg": ["Enterprise Firewall (EFG / UXG-Enterprise)", { ports: [...oRj(2, i => i + " 2.5G"), ...oSfp(2, i => "SFP+ " + i), ...oSfp(2, i => "SFP28 " + i)], lcm: true, rack: true }],
+        "unifi-ef-core": ["Enterprise Firewall Core (EF-Core)", { ports: [["rj", "MGMT"], ...oRj(2, i => i + " 1G"), ...oRj(8, i => i + " 10G", () => false, 3), ...oSfp(4, i => "25G " + i), ...oSfp(4, i => "100G " + i)], lcm: true, console: true, rack: true }],
+    };
+    // Switches: [name, SKU, RJ45 count, PoE count, SFP count, SFP label, has a front screen].
+    const UNIFI_SWITCHES = [
+        ["Enterprise Campus Aggregation", "ECS-Aggregation", 0, 0, 54, i => i <= 48 ? "25G" : "100G", true],
+        ["Enterprise Campus 48 PoE", "ECS-48-PoE", 48, 48, 4, "25G", true], ["Enterprise Campus 24 PoE", "ECS-24-PoE", 24, 24, 2, "25G", true],
+        ["Enterprise Audio/Video XG 24 PoE", "EAV-XG-24-PoE", 24, 24, 4, "100G", true], ["Enterprise Audio/Video Fiber", "EAV-Fiber", 0, 0, 22, i => i <= 20 ? "10G" : "100G", true],
+        ["Pro XG 48 PoE", "USW-Pro-XG-48-PoE", 48, 48, 4, "25G", true], ["Pro XG 24 PoE", "USW-Pro-XG-24-PoE", 24, 24, 2, "25G", true],
+        ["Pro XG 10 PoE", "USW-Pro-XG-10-PoE", 10, 10, 2, "10G", true], ["Pro XG 8 PoE", "USW-Pro-XG-8-PoE", 8, 8, 2, "10G", false],
+        ["Pro XG Aggregation", "USW-Pro-XG-Aggregation", 0, 0, 32, "25G", true],
+        ["Pro HD 24 PoE", "USW-Pro-HD-24-PoE", 24, 24, 4, "10G", true], ["Pro HD 24", "USW-Pro-HD-24", 24, 0, 4, "10G", true],
+        ["Hi-Capacity Aggregation", "USW-Pro-Aggregation", 0, 0, 32, i => i <= 28 ? "10G" : "25G", true], ["Aggregation", "USW-Aggregation", 0, 0, 8, "10G", true],
+        ["Pro Max 48 PoE", "USW-Pro-Max-48-PoE", 48, 48, 4, "10G", true], ["Pro Max 24 PoE", "USW-Pro-Max-24-PoE", 24, 24, 2, "10G", true],
+        ["Pro Max 16 PoE", "USW-Pro-Max-16-PoE", 16, 16, 2, "10G", true], ["Pro Max 48", "USW-Pro-Max-48", 48, 0, 4, "10G", true],
+        ["Pro Max 24", "USW-Pro-Max-24", 24, 0, 2, "10G", true], ["Pro Max 16", "USW-Pro-Max-16", 16, 0, 2, "10G", true],
+        ["Pro 48 PoE", "USW-Pro-48-PoE", 48, 48, 4, "10G", true], ["Pro 24 PoE", "USW-Pro-24-PoE", 24, 24, 2, "10G", true],
+        ["Pro 48", "USW-Pro-48", 48, 0, 4, "10G", true], ["Pro 24", "USW-Pro-24", 24, 0, 2, "10G", true],
+        ["Pro 8 PoE", "USW-Pro-8-PoE", 8, 8, 2, "10G", true], ["Mission Critical", "USW-Mission-Critical", 9, 8, 0, "", true],
+        ["Standard 48 PoE", "USW-48-PoE", 48, 32, 4, "SFP", true], ["Standard 24 PoE", "USW-24-PoE", 24, 16, 2, "SFP", true],
+        ["Standard 16 PoE", "USW-16-PoE", 16, 8, 2, "SFP", true], ["Standard 48", "USW-48", 48, 0, 4, "SFP", true], ["Standard 24", "USW-24", 24, 0, 2, "SFP", true],
+        ["Enterprise 8 PoE", "USW-Enterprise-8-PoE", 8, 8, 2, "10G", true],
+        ["Lite 16 PoE", "USW-Lite-16-PoE", 16, 8, 0, "", false], ["Lite 8 PoE", "USW-Lite-8-PoE", 8, 4, 0, "", false],
+        ["Ultra", "USW-Ultra", 8, 7, 0, "", false], ["Flex 2.5G PoE", "USW-Flex-2.5G-8-PoE", 9, 8, 1, "10G", false],
+        ["Flex 2.5G", "USW-Flex-2.5G-8", 9, 0, 1, "10G", false], ["Flex Mini 2.5G", "USW-Flex-2.5G-5", 5, 0, 0, "", false],
+        ["Flex 10 GbE", "USW-Flex-XG", 4, 0, 0, "", false], ["Flex", "USW-Flex", 5, 4, 0, "", false], ["Flex Mini", "USW-Flex-Mini", 5, 0, 0, "", false],
+    ];
+    // Wi-Fi: [name, what, form, front ports (in-wall models)].
+    const UNIFI_WIFI = [
+        ["U7 Pro XGS", "Wi-Fi 7, ceiling", "disc"], ["U7 Pro XG", "Wi-Fi 7, ceiling", "disc"], ["U7 Pro Max", "Wi-Fi 7, ceiling", "disc"], ["U7 Pro", "Wi-Fi 7, ceiling", "disc"],
+        ["U7 Long-Range", "Wi-Fi 7, ceiling", "disc"], ["U7 Lite", "Wi-Fi 7, ceiling", "disc"], ["U6 Enterprise", "Wi-Fi 6E, ceiling", "disc"], ["U6 Pro", "Wi-Fi 6, ceiling", "disc"],
+        ["U6 Long-Range", "Wi-Fi 6, ceiling", "disc"], ["U6+", "Wi-Fi 6, ceiling", "disc"],
+        ["E7", "Wi-Fi 7, enterprise", "square"], ["E7 Audience", "Wi-Fi 7, high density", "panel"], ["E7 Campus", "Wi-Fi 7, outdoor", "square"],
+        ["U7 Pro XG Wall", "Wi-Fi 7, wall", "wall"], ["U7 Pro Wall", "Wi-Fi 7, wall", "wall"],
+        ["U7 In-Wall", "Wi-Fi 7, in-wall", "inwall", 3], ["U6 Enterprise In-Wall", "Wi-Fi 6E, in-wall", "inwall", 5], ["U6 In-Wall", "Wi-Fi 6, in-wall", "inwall", 5],
+        ["U7 Mesh Wall", "Wi-Fi 7, plug-in mesh", "plug"], ["U6 Extender", "Wi-Fi 6, plug-in", "plug"],
+        ["U7 Pro Outdoor", "Wi-Fi 7, outdoor", "outdoor"], ["U7 Outdoor", "Wi-Fi 7, outdoor", "outdoor"], ["U7 Industrial", "Wi-Fi 7, industrial", "outdoor"],
+        ["U7 Mesh", "Wi-Fi 7, mesh", "mesh"], ["U6 Mesh Pro", "Wi-Fi 6, mesh", "panel"], ["U6 Mesh", "Wi-Fi 6, mesh", "mesh"],
+        ["AC Mesh Pro", "Wi-Fi 5, mesh", "panel"], ["AC Mesh", "Wi-Fi 5, mesh", "mesh"], ["Swiss Army Knife Ultra", "Wi-Fi 5, anywhere", "outdoor"],
+        ["WiFi BaseStation XG", "Wi-Fi 5, high density", "panel"],
+        ["Device Bridge IoT", "2.4 GHz bridge", "small"], ["Device Bridge", "5 GHz bridge", "small"], ["Device Bridge Switch", "Wi-Fi 7 bridge + 8-port PoE switch", "bridgeswitch"],
+        ["Device Bridge Pro", "5 GHz bridge", "disc"], ["Device Bridge Pro Sector", "5 GHz sector bridge", "sector"],
+        ["Building Bridge XG", "60 GHz bridge", "disc"], ["Building Bridge", "60 GHz bridge", "disc"],
+    ];
+    const UNIFI_FORM = {
+        disc: { w: 150, h: 150, draw: L => `<circle cx="75" cy="75" r="73" fill="#f4f5f7" stroke="#b5b9bf"/><circle cx="75" cy="75" r="18" fill="none" stroke="${(L[0] || {}).up ? "#3b82f6" : OFF}" stroke-width="5" class="${(L[0] || {}).up && (L[0] || {}).act ? "led-slow" : ""}"/>` },
+        square: { w: 150, h: 150, draw: L => `<rect width="150" height="150" rx="16" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 65, 128, 20, 5)}` },
+        panel: { w: 110, h: 200, draw: L => `<rect width="110" height="200" rx="12" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 45, 178, 20, 5)}` },
+        wall: { w: 110, h: 160, draw: L => `<rect width="110" height="160" rx="14" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 45, 22, 20, 5)}` },
+        plug: { w: 110, h: 170, draw: L => `<rect width="110" height="170" rx="22" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 45, 140, 20, 5)}` },
+        outdoor: { w: 120, h: 150, draw: L => `<rect width="120" height="150" rx="18" fill="#f4f5f7" stroke="#b5b9bf"/><rect x="14" y="120" width="92" height="14" rx="3" fill="#e1e3e7"/>${uLight(L, 50, 22, 20, 5)}` },
+        mesh: { w: 50, h: 170, draw: L => `<rect width="50" height="170" rx="25" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 17, 140, 16, 5)}` },
+        small: { w: 120, h: 70, draw: L => `<rect width="120" height="70" rx="10" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 50, 30, 20, 5)}` },
+        sector: { w: 70, h: 210, draw: L => `<rect width="70" height="210" rx="10" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 25, 186, 20, 5)}` },
+    };
+    // An in-wall unit: the plate with its ports on the front.
+    const unifiInWall = n => ({ w: 150, h: 190, draw: L => `<rect width="150" height="190" rx="12" fill="#f4f5f7" stroke="#b5b9bf"/>${uLight(L, 65, 20, 20, 5)}
+        ${Array.from({ length: n }, (_, i) => miniJack(n <= 3 ? 25 + i * 36 : 15 + (i % 3) * 42, n <= 3 ? 150 : 110 + Math.floor(i / 3) * 34, (L[i] || {}).up, { color: (L[i] || {}).speed, act: (L[i] || {}).act })).join("")}` });
+    const uid = t => "unifi-" + t.toLowerCase().replace(/\+/g, "plus").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const unifiAdd = (id, label, group, art) => { GEAR_ART[id] = { label: `Ubiquiti UniFi ${label}`, group: `Ubiquiti UniFi ${group}`, w: art.w, h: art.h, draw: l => art.draw(omadaLights(l)) }; };
+    Object.entries(UNIFI_GATEWAYS).forEach(([id, [label, spec]]) => unifiAdd(id, label, "Cloud Gateways", spec.draw ? spec : omadaPanel(spec)));
+    UNIFI_SWITCHES.forEach(([name, sku, rj, poe, sfp, sfpLabel, lcm]) => {
+        const sl = typeof sfpLabel === "function" ? sfpLabel : () => sfpLabel;
+        unifiAdd(uid(sku), `${name} (${sku})`, "Switches", omadaPanel({ ports: [...oRj(rj, String, i => i <= poe), ...oSfp(sfp, i => `${rj + i}${sl(i) && sl(i) !== "SFP" ? " " + sl(i) : ""}`)], lcm, rack: rj + sfp >= 16 }));
+    });
+    UNIFI_WIFI.forEach(([name, what, form, front]) => unifiAdd(uid(name), `${name} · ${what}`, /bridge/i.test(what) ? "Bridges" : "Wi-Fi",
+        form === "inwall" ? unifiInWall(front) : form === "bridgeswitch" ? omadaPanel({ ports: [["rj", "10G"], ...oRj(7, String, () => true, 2)], shell: "white", lcm: true }) : UNIFI_FORM[form]));
+
+    // Lights for a maker drawing: port 1 = the link to the Firewalla port above, then the clients' ports.
+    const omadaLights = l => Array.from({ length: 60 }, (_, i) => i === 0 ? { up: l.up, speed: l.color, act: l.act } : { up: l.up && i <= (l.lit || 0), speed: l.color, act: false });
+    Object.entries(OMADA).forEach(([id, [kind, model, spec, antennas]]) => {
+        const panel = spec === "fusion9" ? fusionArt(9) : spec === "fusion" ? fusionArt(0) : spec === "outdoor" ? outdoorArt : omadaPanel(spec);
+        const art = antennas ? withAntennas(panel, antennas) : panel;
+        GEAR_ART[id] = { label: `TP-Link Omada ${model}`, group: `TP-Link Omada ${kind === "Switch" ? "Switches" : kind + "s"}`, w: art.w, h: art.h, draw: l => art.draw(omadaLights(l)) };
+    });
+    OMADA_APS.forEach(([model, what, form]) => {
+        const art = OMADA_AP_FORM[form], id = "omada-" + model.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-$/, "");
+        GEAR_ART[id] = { label: `TP-Link Omada ${model} · ${what}`, group: form === "bridge" ? "TP-Link Omada Wireless Bridges" : "TP-Link Omada Access Points",
+            w: art.w, h: art.h, draw: l => art.draw(omadaLights(l)) };
+    });
+
+    // For Your Equipment's chooser (views.js): the drawings and a preview of one.
+    window.DashboardGearArt = {
+        list: Object.entries(GEAR_ART).map(([id, a]) => ({ id, label: a.label, group: a.group || "By Kind" })),
+        // Firewalla's models, with their kind (router, switch, ap): offered for units of that kind.
+        models: Object.entries(FW_ART).map(([id, a]) => ({ id, label: a.label, kind: a.kind })),
+        svg: (id, l = { up: true, color: 1000, act: true, lit: 2 }, height = 40) => {
+            const a = GEAR_ART[id] || FW_ART[id];
+            if (!a) return "";
+            const k = height / a.h;
+            const body = GEAR_ART[id] ? a.draw(l) : a.draw(Array.from({ length: 12 }, (_, i) => ({ up: i < 3, speed: 1000, act: i < 3 })), "good");
+            return `<svg class="gear-thumb" width="${(a.w * k).toFixed(0)}" height="${height}" viewBox="0 0 ${a.w} ${a.h}">${body}</svg>`;
+        },
+    };
+    const gearPicks = data => data.gear_pictures?.picks || {};
+    const gearOthers = data => data.gear_pictures?.others || [];
+    const gearPhoto = pick => pick?.photo ? "/api/gear-pictures/photo/" + encodeURIComponent(pick.photo) : null;
+    const gearArtOf = (data, o) => GEAR_ART[gearPicks(data)[o.id]?.art] ? gearPicks(data)[o.id].art : o.guess;
+    // The lights of gear that reports nothing: those of the Firewalla port it hangs off.
+    function gearLight(data, o) {
+        const lit = o.clients || (o.carries || []).length || 0;
+        if (o.on === "router") {
+            const p = (data.ports || []).find(x => x.name === o.port) || {};
+            const up = Number(p.carrier) === 1;
+            return { up, color: p.speed, act: up && busy(p.rx_mbps, p.tx_mbps), lit, rx: p.rx_mbps, tx: p.tx_mbps };
+        }
+        const p = (((data.switches || {})[o.on.slice(3)] || {}).ports || {})[o.port] || {};
+        return { up: !!p.link_up, color: p.link_speed, act: p.link_up && busy(p.rx_mbps, p.tx_mbps), lit, rx: p.rx_mbps, tx: p.tx_mbps };
+    }
+    const GEAR_MAP = [90, 28];   // the most a drawing takes on the map (CSS px)
+    const gearMapScale = a => Math.min(GEAR_MAP[0] / a.w, GEAR_MAP[1] / a.h);
 
     // PoE mark under a port that is powering something.
     // (Larger and outlined since 20 Nov 2026, so it reads on the pop-up's big picture.)
@@ -1447,7 +1960,7 @@
     // with each port's live link light drawn into its opening.
     // (Owner, 20 Nov 2026: the pictures at about a third of their earlier map
     // size, so the wired clients have room when they are shown.)
-    const NODE = { wan: [150, 58], vpn: [150, 58], router: [678, 134], switch: [813, 116], ap: [66, 66], junction: [26, 26], group: [0, 0] };
+    const NODE = { wan: [150, 58], vpn: [150, 58], router: [678, 134], switch: [813, 116], ap: [66, 66], junction: [26, 26], group: [0, 0], gear: [90, 28] };
     const ICON_SCALE = { router: .144, switch: .105, ap: .245 };
     const ROUTER_PHOTO_PORTS = [210, 276, 341, 407]; // left edge of ports 1-4 in the photo (37 px wide)
     // Switch X photo: left edge of ports 1-8 (copper, 32 px wide, top 62)
@@ -1517,6 +2030,11 @@
         add("router", "router");
         Object.keys(data.switches || {}).forEach(id => add("sw:" + id, "switch"));
         Object.keys(data.access_points || {}).forEach(id => add("ap:" + id, "ap"));
+        // A unit drawn from its Firewalla model (D-1075 part 2) takes that drawing's shape.
+        nodes.forEach(n => {
+            const a = fwArtFor(data, n);
+            if (a) { const k = fwMapScale(a, n.kind); Object.assign(n, { w: a.w * k, h: a.h * k }); }
+        });
         let links = topologyLinks(data).map(l => ({ ...l }));
         // Two or more APs on one switch port: something unmanaged sits between
         // (a powerline network, an unmanaged switch), unless one of two APs
@@ -1544,6 +2062,21 @@
             links = links.filter(l => !list.includes(l));
             links.push({ ...list[0], b: jn, bPort: null });
             list.forEach(l => links.push({ a: jn, aPort: null, b: l.b, bPort: l.bPort, speed: l.speed, shared: true }));
+        });
+        // Non-Firewalla gear from the Network Assessment (D-1075): a link between
+        // Firewalla units is drawn into its junction; anything else hangs off the
+        // Firewalla port it is plugged into.
+        gearOthers(data).forEach(o => {
+            const a = GEAR_ART[gearArtOf(data, o)], k = a ? gearMapScale(a) : 1;
+            const size = a ? { w: a.w * k, h: a.h * k } : {};
+            if (o.junction) {
+                const jn = nodes.get("jn:" + o.on + "|" + o.port);
+                if (jn) Object.assign(jn, { gear: o }, size);
+                return;
+            }
+            if (!a || !nodes.has(o.on)) return;
+            add("nf:" + o.id, "gear", { gear: o, ...size });
+            links.push({ a: o.on, aPort: o.port, b: "nf:" + o.id, bPort: null });
         });
         // Wired clients: one compact block per switch, one column (a second
         // column only past 8 devices) so the map stays narrow.
@@ -1642,6 +2175,31 @@
         // then scaled down into place; the hover ring stays outside the scaling.
         const scaled = (body, ringRx) => `<g transform="translate(${x} ${y}) scale(${ICON_SCALE[n.kind]})">${body}</g>
             <rect class="ring" x="${x - 5}" y="${y - 5}" width="${n.w + 10}" height="${n.h + 10}" rx="${ringRx}"/>`;
+        // Non-Firewalla gear: its drawing (or your photo), lights from the port above.
+        if (n.gear) {
+            const pick = gearPicks(data)[n.gear.id], photo = gearPhoto(pick), a = GEAR_ART[gearArtOf(data, n.gear)];
+            const body = photo ? `<image href="${photo}" x="${x}" y="${y}" width="${n.w}" height="${n.h}" preserveAspectRatio="xMidYMid meet"/>`
+                : a ? `<g transform="translate(${x} ${y}) scale(${gearMapScale(a)})">${a.draw(gearLight(data, n.gear))}</g>` : "";
+            return body + `<rect class="ring" x="${x - 5}" y="${y - 5}" width="${n.w + 10}" height="${n.h + 10}" rx="6"/>`;
+        }
+        // Your own photo of a Firewalla unit: the photo, its port lights in a row under it.
+        const own = gearPhoto(gearPicks(data)[n.id]);
+        if (own && ["router", "switch", "ap"].includes(n.kind)) {
+            const lights = n.kind === "router" ? routerPanelPorts(data).map(p => [Number(p.carrier) === 1, p.speed, p.rx_mbps, p.tx_mbps])
+                : n.kind === "switch" ? Object.values(((data.switches || {})[n.id.slice(3)] || {}).ports || {})
+                    .sort((a, b) => String(a.port).localeCompare(String(b.port), undefined, { numeric: true })).map(p => [p.link_up, p.link_speed, p.rx_mbps, p.tx_mbps]) : [];
+            const step = lights.length ? Math.min(6, n.w / lights.length) : 0;
+            return `<image href="${own}" x="${x}" y="${y}" width="${n.w}" height="${n.h}" preserveAspectRatio="xMidYMid meet"/>
+                ${lights.map(([up, sp, rx, tx], i) => led(x + (n.w - step * lights.length) / 2 + i * step + .5, y + n.h + 1.5, Math.max(2, step - 1.5), 2, speedColor(sp, up), up && busy(rx, tx))).join("")}
+                <rect class="ring" x="${x - 5}" y="${y - 5}" width="${n.w + 10}" height="${n.h + 10}" rx="6"/>`;
+        }
+        // A Firewalla unit drawn from its model (D-1075 part 2), with live port lights.
+        const model = ["router", "switch", "ap"].includes(n.kind) && fwArtFor(data, n);
+        if (model) {
+            const [L, tone] = fwLights(data, n);
+            return `<g transform="translate(${x} ${y}) scale(${fwMapScale(model, n.kind)})">${model.draw(L, tone)}</g>
+                <rect class="ring" x="${x - 5}" y="${y - 5}" width="${n.w + 10}" height="${n.h + 10}" rx="6"/>`;
+        }
         if (n.kind === "router") {
             // Each port's light in its opening (colour = link speed, blinking
             // while traffic passes); a port whose link is down is shaded.
@@ -1785,6 +2343,10 @@
             // No "N clients" line (owner, 22 Nov 2026): the Clients badge under the name says it.
             return [a.name, ""];
         }
+        if (n.gear) {
+            const a = GEAR_ART[gearArtOf(data, n.gear)];
+            return [a?.label || "Not Firewalla", `${n.gear.where} · not Firewalla`];
+        }
         if (n.kind === "junction") return ["Shared link", `Port ${n.swPort} · powerline or unmanaged switch`];
         if (n.kind === "wan") {
             const s = D.wanState(D.wan(data, n.iface.name));
@@ -1837,6 +2399,16 @@
                 ["Uplink", F.esc(a.uplink_name ? `${a.uplink_name}${a.uplink_port ? " · " + a.uplink_port : ""}` : "--")],
                 ["Link", F.linkSpeed(a.link_speed)]
             ], "", related);
+        }
+        if (n.gear) {
+            const o = n.gear, a = GEAR_ART[gearArtOf(data, o)], l = gearLight(data, o), pick = gearPicks(data)[o.id];
+            return tipAttrs(key, a?.label || "Not Firewalla", "Not Firewalla gear", [
+                ["Plugged into", F.esc(o.where)],
+                ["What it is", F.esc(o.label) + (pick ? ` <span class="muted">· picture: ${pick.photo ? "your photo" : "your pick"}</span>` : "")],
+                ...(o.carries?.length ? [["Carries", F.esc(o.carries.join(", "))]] : o.clients ? [["Clients", F.count(o.clients)]] : []),
+                ["Link", l.up ? `${speedText(l.color)} · <span class="rx">${F.mbps(l.rx)}</span> / <span class="tx">${F.mbps(l.tx)}</span>` : `<span class="muted">down</span>`],
+                ["Its lights", "It reports nothing to Firewalla, so they show the port it is plugged into"]
+            ], "Change the picture in Network Assessment › Your Equipment", related);
         }
         if (n.kind === "junction") {
             return tipAttrs(key, "Shared link", `Switch port ${n.swPort}`, [

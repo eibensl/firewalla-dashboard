@@ -817,10 +817,13 @@ a.go:hover { color: var(--link); text-decoration: underline; }
 .device-art .lbl { fill: var(--muted); font-size: 12px; }
 .device-art .lbl-strong { fill: var(--text); font-size: 12px; font-weight: 600; }
 .device-art .hot { cursor: pointer; }
+svg .hl { fill: none; opacity: 0; }   /* a port's hover outline: hidden outside the big pictures (map, thumbnails) */
 .device-art .hl { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0; transition: opacity .12s; }
 .device-art .hot.hovered .hl { opacity: 1; }
 .device-art .hot.hovered .band-arc { stroke-width: 9; }
-.led-act { animation: fw-blink .6s steps(2, jump-none) infinite; }
+.led-act { animation: fw-blink .6s steps(2, jump-none) infinite; }
+.led-act.led-fast { animation-duration: .22s; }   /* 50 Mb/s or more */
+.led-act.led-light { animation-duration: 1.2s; }   /* under 1 Mb/s */
 @keyframes fw-blink { 0% { opacity: 1; } 100% { opacity: .15; } }
 /* Calm status blink (AP7C status light, router status) */
 .led-slow { animation: fw-pulse 1.6s ease-in-out infinite; }
@@ -2358,6 +2361,15 @@ span.ct-planned { color: var(--warn-text); }
 .kb-convo summary { cursor: pointer; color: var(--muted); }
 .kb-msg { margin: 6px 0 0; padding: 4px 8px; border-left: 3px solid var(--line-strong); border-radius: 4px; }
 .kb-msg.claude { border-left-color: var(--claude-text); }
+.as-offer { max-width: 640px; }
+.gear-pic { display: inline-flex; align-items: center; gap: 8px; }
+.as-art-grid { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: flex-end; }
+.as-art { display: inline-flex; flex-direction: column; align-items: center; max-width: 360px; text-align: center; }
+.as-art .gear-thumb { height: 64px; max-width: 350px; }
+.as-art-group { margin: 14px 0 6px; }
+.gear-thumb { height: 40px; width: auto; max-width: 120px; object-fit: contain; vertical-align: middle; }
+.gear-pick { background: var(--raised); color: var(--text); border: 1px solid var(--line-strong); border-radius: 6px; padding: 2px 6px; font: inherit; }
+.as-offer p, .as-offer ul { margin: 0 0 8px; }
 .pl-why { margin-top: 8px; padding: 8px 10px; border-radius: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px;
     background: color-mix(in srgb, var(--claude) 7%, transparent); border: 1px solid color-mix(in srgb, var(--claude) 22%, transparent); }
 .pl-why-head { font-weight: 600; font-size: 12px; color: var(--claude-text); }

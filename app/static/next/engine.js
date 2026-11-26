@@ -2037,6 +2037,7 @@
             recordHistory(data);
             if (firstData) { showSite(); renderNav(); renderFilterBar(); renderPage(); }
             else refreshPage();
+            window.DashboardViews?.assessmentOffer?.(data);   // Network Assessment's first-run pop-up (D-1072)
         } catch (error) {
             state.lastFetchOk = false;
         } finally {

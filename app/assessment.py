@@ -33,13 +33,23 @@
 # line each (they are done on Target Lists).
 # Kept in assessment_full (the page), state["assessment"] (a summary for
 # Needs You) and /data/assessment.json (places, answers, history, declines).
+# The offer (D-1072, owner 25 Nov 2026; built 26 Nov 2026): Learn always runs,
+# but the findings wait for a Yes. A new install is asked once Learn has a
+# first result, in a pop-up each time the dashboard is opened: Yes (the
+# findings start), No (never asked again) or Ask Me Later (asked again 3
+# days later, at the next open). Run Assessment on the page says Yes at any
+# time. An install that had the assessment before the pop-up counts as Yes.
 
+import base64
+import hashlib
 import json
 import os
+import re
 import threading
 import time
 
 from fastapi import Body
+from fastapi.responses import FileResponse, Response
 
 from core import Fields, INTERFACE_METADATA, app, policy_read_json, router_macs, router_ready, state
 from flows import local_history_fetch
@@ -48,8 +58,25 @@ ASSESSMENT_FILE = os.environ.get("FIREWALLA_ASSESSMENT_FILE", "/data/assessment.
 ASSESSMENT_EVERY = 60                  # seconds between looks
 ASSESSMENT_HISTORY_EVERY = 24 * 3600   # how often the router's history length is checked
 ASSESSMENT_HISTORY_DAYS = (1, 3, 7, 14, 30)
+ASSESSMENT_LATER = 3 * 86400            # Ask Me Later: asked again after this long
 ASSESSMENT_UNPLACED_WAIT = 600         # an online client no AP or switch reports is asked about after this long
 assessment_lock = threading.Lock()
+
+# Equipment pictures (D-1075 part 1, owner 26 Nov 2026): a picture for each
+# unit in Your Equipment, shown on Topology. Our own drawings (no maker
+# photos: copyright) by kind for non-Firewalla gear, or your own photo of
+# any unit, kept only in /data/gear-photos and never shared. The drawings
+# themselves are in cards.js (GEAR_ART), with live port lights.
+GEAR_PICTURES_FILE = os.environ.get("FIREWALLA_GEAR_PICTURES_FILE", "/data/gear-pictures.json")
+GEAR_PHOTO_DIR = os.environ.get("FIREWALLA_GEAR_PHOTO_DIR", "/data/gear-photos")
+GEAR_ART = ("modem", "router", "switch5", "switch8", "switch16", "ap-ceiling", "ap-wall", "mesh", "powerline",
+            # Firewalla's current models (part 2): for Firewalla units of that kind
+            "fw-gold-pro", "fw-gold-plus-sfp", "fw-gold-plus", "fw-gold-se", "fw-orange", "fw-purple-se",
+            "fw-switch-x", "fw-switch-se", "fw-ap7-desktop", "fw-ap7-ceiling")
+GEAR_PHOTO_MAX = 4 * 1024 * 1024
+GEAR_PHOTO_TYPES = {b"\xff\xd8\xff": "jpg", b"\x89PNG": "png", b"RIFF": "webp"}
+GEAR_PHOTO_NAME = r"[0-9a-f]{16}-\d+\.(jpg|png|webp)"
+gear_lock = threading.Lock()
 
 # The answers each kind of question offers: value -> (label, level it sets).
 # "same" leaves the level as worked out; None means it says nothing about a client.
@@ -73,10 +100,21 @@ ASSESSMENT_CHOICES = {
 
 
 def assessment_load():
+    had = os.path.exists(ASSESSMENT_FILE)
     st = policy_read_json(ASSESSMENT_FILE) or {}
     for key in ("places", "answers", "history", "unplaced"):
         st.setdefault(key, {})
+    # Before the pop-up (26 Nov 2026) the findings ran on every install: such an install counts as Yes.
+    st.setdefault("offer", {"state": "yes", "at": time.time(), "by": "before the pop-up"} if had else {"state": "new"})
     return st
+
+
+def assessment_offer_view(offer, now):
+    """The offer as the page sees it: its state, whether to ask now, and
+    when Ask Me Later asks again."""
+    s = offer.get("state")
+    return {"state": s, "ask": s == "new" or (s == "later" and now >= (offer.get("ask_after") or 0)),
+            "ask_after": offer.get("ask_after"), "at": offer.get("at")}
 
 
 def assessment_save(st):
@@ -124,6 +162,7 @@ def assessment_build(st):
     ambiguous = {up(k) for k in (state.get("ambiguous_wired_clients") or {})}
     answers = st["answers"]
     asks, links = {}, []
+    others = []   # non-Firewalla gear the questions found or you named, for its picture and Topology
 
     def ask(qid, kind, title, text):
         a = answers.get(qid) or {}
@@ -146,17 +185,26 @@ def assessment_build(st):
             kind = p.get("connection_type")
             if kind == "client" and int(p.get("direct_client_count") or 0) > 1:
                 qid = f"port|{up(smac)}|{pn}"
-                port_of[(up(smac), str(pn))] = ask(qid, "shared_port", f"What Is Plugged Into {where}?",
+                port_of[(up(smac), str(pn))] = choice = ask(qid, "shared_port", f"What Is Plugged Into {where}?",
                     f"{int(p['direct_client_count'])} clients share this one port ({', '.join(names[:6])}), so something that isn't Firewalla is between them and the switch. Rules between those clients can't be enforced there.")
+                others.append({"id": qid, "where": where, "on": "sw:" + smac, "port": str(pn), "guess": "router" if choice and choice[0] == "router" else "switch8",
+                               "label": choice[1] if choice else "Something Non-Firewalla", "clients": int(p["direct_client_count"])})
             elif not kind and not names:
-                ask(f"port|{up(smac)}|{pn}", "empty_port", f"What Is Plugged Into {where}?",
+                choice = ask(f"port|{up(smac)}|{pn}", "empty_port", f"What Is Plugged Into {where}?",
                     f"The link is up ({p.get('link_speed') or '?'} Mbps{', VLAN ' + str(p['pvid']) if p.get('pvid') else ''}) but no client is seen on it.")
+                if choice and choice[0] in ("switch", "router"):
+                    others.append({"id": f"port|{up(smac)}|{pn}", "where": where, "on": "sw:" + smac, "port": str(pn),
+                                   "guess": "router" if choice[0] == "router" else "switch8", "label": choice[1], "clients": 0})
             elif kind == "infrastructure" and len(names) >= 2 and len(p.get("connected_macs") or []) == len(names) \
                     and not {up(m) for m in p.get("connected_macs") or []} & (rmacs | switch_macs):
                 qid = f"link|{up(smac)}|{pn}"
                 choice = ask(qid, "gear_link", f"What Links {', '.join(names)} to {where}?",
                              f"{len(names)} Firewalla units are behind one switch port, so something that isn't Firewalla joins them: a powerline adapter or an unmanaged switch.")
                 links.append({"id": qid, "where": where, "carries": names, "answer": choice[1] if choice else None})
+                # Drawn where Topology already shows the link (its junction on that switch port).
+                others.append({"id": qid, "where": where, "on": "sw:" + smac, "port": str(pn), "junction": True,
+                               "guess": "switch8" if choice and choice[0] == "switch" else "powerline",
+                               "label": choice[1] if choice else "A Powerline or Unmanaged Switch", "carries": names})
 
     # Router LAN ports with a link: each should lead to a Firewalla switch or AP.
     # (a switch port facing the router lists a router MAC and no other
@@ -169,8 +217,11 @@ def assessment_build(st):
     to_router += sum(1 for a in aps.values() if a.get("uplink_type") == "router")
     lan_up = [p["name"] for p in state.get("ports") or [] if p.get("role") == "lan" and p.get("carrier")]
     for name in lan_up[to_router:] if len(lan_up) > to_router else []:
-        ask(f"router-port|{name}", "router_port", f"What Is Plugged Into Router {gold_pro_port(name)}?",
+        choice = ask(f"router-port|{name}", "router_port", f"What Is Plugged Into Router {gold_pro_port(name)}?",
             "This router port has a link, but no Firewalla switch or AP is found on it.")
+        if choice and choice[0] in ("switch", "router"):
+            others.append({"id": f"router-port|{name}", "where": f"Router {gold_pro_port(name)}", "on": "router", "port": name,
+                           "guess": "router" if choice[0] == "router" else "switch8", "label": choice[1], "clients": 0})
 
     # Every client.
     now = time.time()
@@ -231,9 +282,9 @@ def assessment_build(st):
     counts = {}
     for c in clients:
         counts[c["level"]] = counts.get(c["level"], 0) + 1
-    gear = [{"kind": "router", "name": router_name}] \
-        + [{"kind": "switch", "name": s.get("name"), "mac": up(m), "uplink": uplink.get(up(m))} for m, s in switches.items()] \
-        + [{"kind": "ap", "name": a.get("name"), "mac": up(m), "uplink": a.get("uplink_name"), "uplink_type": a.get("uplink_type")} for m, a in aps.items()]
+    gear = [{"kind": "router", "name": router_name, "unit": "router"}] \
+        + [{"kind": "switch", "name": s.get("name"), "mac": up(m), "unit": "sw:" + m, "uplink": uplink.get(up(m))} for m, s in switches.items()] \
+        + [{"kind": "ap", "name": a.get("name"), "mac": up(m), "unit": "ap:" + m, "uplink": a.get("uplink_name"), "uplink_type": a.get("uplink_type")} for m, a in aps.items()]
     st["ask_seen"] = {k: v for k, v in st.get("ask_seen", {}).items() if k in asks}
     findings = assessment_findings(st, clients, now)
     # List Check's open findings, one line each: they are done on Target Lists (owner, 25 Nov 2026).
@@ -242,7 +293,7 @@ def assessment_build(st):
     return {"at": now, "clients": clients, "counts": counts, "gear": gear, "links": links,
             "asks": sorted(asks.values(), key=lambda q: (q["answer"] is not None, q["title"])),
             "open_asks": sum(1 for q in asks.values() if q["answer"] is None),
-            "findings": findings, "open_findings": sum(1 for x in findings if not x["declined"]), "list_check": lc}
+            "findings": findings, "open_findings": sum(1 for x in findings if not x["declined"]), "list_check": lc, "others": others}
 
 
 def assessment_findings(st, clients, now):
@@ -356,7 +407,7 @@ def assessment_run(history=False):
         st = assessment_load()
         out = assessment_build(st)
         assessment_save(st)
-    assessment_publish({**out, "history": st["history"]})
+    assessment_publish({**out, "history": st["history"], "offer": assessment_offer_view(st["offer"], out["at"])})
     if history:
         h = {"history": dict(st["history"])}
         try:
@@ -377,11 +428,18 @@ assessment_full = None
 
 def assessment_publish(full):
     global assessment_full
-    assessment_full = full
     open_asks = [q for q in full["asks"] if not q["answer"]]
+    full = {**full, "pictures": gear_pictures_load()}
+    assessment_full = full
+    # Topology draws from the status data: the picks and the non-Firewalla gear (small).
+    state["gear_pictures"] = {"picks": full["pictures"], "others": full.get("others") or []}
+    if full["offer"]["state"] != "yes":
+        # Not started (no Yes yet): the findings are worked out but not shown or counted.
+        full = {**full, "findings": [], "open_findings": 0}
+        assessment_full = full
     open_finds = [x for x in full["findings"] if not x["declined"]]
     state["assessment"] = {"at": full["at"], "counts": full["counts"], "open_asks": len(open_asks), "open_findings": len(open_finds),
-                           "open": len(open_asks) + len(open_finds),
+                           "open": len(open_asks) + len(open_finds), "offer": full["offer"],
                            "newest_at": max([q["seen"] for q in open_asks] + [x["first_seen"] for x in open_finds], default=0)}
 
 
@@ -422,6 +480,118 @@ def api_assessment_answer(payload: dict = Body(default={})):
         assessment_save(st)
     assessment_run()
     return {"ok": True}
+
+
+@app.post("/api/assessment/offer")
+def api_assessment_offer(payload: dict = Body(default={})):
+    """The pop-up's answer, or Run Assessment: {choice: yes | no | later}."""
+    choice = Fields(payload).text("choice", 10)
+    if choice not in ("yes", "no", "later"):
+        return {"ok": False, "error": "Unknown choice"}
+    now = time.time()
+    with assessment_lock:
+        st = assessment_load()
+        st["offer"] = {"state": choice, "at": now, **({"ask_after": now + ASSESSMENT_LATER} if choice == "later" else {})}
+        assessment_save(st)
+    if assessment_full:
+        assessment_run()
+    return {"ok": True}
+
+
+def gear_pictures_load():
+    return policy_read_json(GEAR_PICTURES_FILE) or {}
+
+
+def gear_pictures_save(picks):
+    temporary = GEAR_PICTURES_FILE + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(picks, handle)
+    os.replace(temporary, GEAR_PICTURES_FILE)
+
+
+def gear_unit_known(unit):
+    a = assessment_full or {}
+    return unit in {g.get("unit") for g in a.get("gear") or []} | {o["id"] for o in a.get("others") or []}
+
+
+def gear_photo_drop(pick):
+    """Delete a unit's old photo file (its pick is being replaced)."""
+    name = (pick or {}).get("photo")
+    if name and re.fullmatch(GEAR_PHOTO_NAME, name):
+        try:
+            os.remove(os.path.join(GEAR_PHOTO_DIR, name))
+        except OSError:
+            pass
+
+
+@app.post("/api/gear-pictures/pick")
+def api_gear_pictures_pick(payload: dict = Body(default={})):
+    """A unit's picture: {unit, art}: one of our drawings, or "standard"
+    (the unit's usual picture: its drawing, or the guess for non-Firewalla gear)."""
+    f_ = Fields(payload)
+    unit, art = f_.text("unit", 200, strip=False), f_.text("art", 40)
+    if not gear_unit_known(unit):
+        return {"ok": False, "error": "That unit isn't in Your Equipment now."}
+    # Maker drawings (TP-Link Omada, Ubiquiti UniFi: D-1075 part 3) are known by their id.
+    if art != "standard" and art not in GEAR_ART and not re.fullmatch(r"(omada|unifi)-[a-z0-9-]{2,40}", art):
+        return {"ok": False, "error": "Unknown picture"}
+    with gear_lock:
+        picks = gear_pictures_load()
+        gear_photo_drop(picks.get(unit))
+        if art == "standard":
+            picks.pop(unit, None)
+        else:
+            picks[unit] = {"art": art, "at": time.time()}
+        gear_pictures_save(picks)
+    assessment_run()
+    return {"ok": True}
+
+
+@app.post("/api/gear-pictures/photo")
+def api_gear_pictures_photo(payload: dict = Body(default={})):
+    """Your own photo of a unit: {unit, data} (data: a JPEG, PNG or WebP,
+    as a data: address or plain base64, up to 4 MB). Kept only in
+    /data/gear-photos, never shared."""
+    unit = Fields(payload).text("unit", 200, strip=False)
+    if not gear_unit_known(unit):
+        return {"ok": False, "error": "That unit isn't in Your Equipment now."}
+    raw = str(payload.get("data") or "")
+    if len(raw) > GEAR_PHOTO_MAX * 4 // 3 + 200:
+        return {"ok": False, "error": "That photo is over 4 MB: use a smaller one."}
+    try:
+        body = base64.b64decode(raw.split(",", 1)[1] if raw.startswith("data:") else raw, validate=True)
+    except ValueError:
+        return {"ok": False, "error": "That isn't a picture file."}
+    ext = next((e for magic, e in GEAR_PHOTO_TYPES.items() if body.startswith(magic)), None)
+    if ext == "webp" and body[8:12] != b"WEBP":
+        ext = None
+    if not ext:
+        return {"ok": False, "error": "Use a JPEG, PNG or WebP photo."}
+    if len(body) > GEAR_PHOTO_MAX:
+        return {"ok": False, "error": "That photo is over 4 MB: use a smaller one."}
+    now = time.time()
+    name = f"{hashlib.sha1(unit.encode()).hexdigest()[:16]}-{int(now)}.{ext}"
+    os.makedirs(GEAR_PHOTO_DIR, exist_ok=True)
+    with open(os.path.join(GEAR_PHOTO_DIR, name), "wb") as handle:
+        handle.write(body)
+    with gear_lock:
+        picks = gear_pictures_load()
+        gear_photo_drop(picks.get(unit))
+        picks[unit] = {"photo": name, "at": now}
+        gear_pictures_save(picks)
+    assessment_run()
+    return {"ok": True, "photo": name}
+
+
+@app.get("/api/gear-pictures/photo/{name}")
+def api_gear_pictures_photo_file(name: str):
+    if not re.fullmatch(GEAR_PHOTO_NAME, name or ""):
+        return Response(status_code=404)
+    path = os.path.join(GEAR_PHOTO_DIR, name)
+    if not os.path.isfile(path):
+        return Response(status_code=404)
+    # The name changes with every new photo, so it can be kept a long time.
+    return FileResponse(path, headers={"Cache-Control": "max-age=31536000, immutable"})
 
 
 @app.post("/api/assessment/decline")

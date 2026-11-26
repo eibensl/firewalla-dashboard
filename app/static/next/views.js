@@ -3055,6 +3055,104 @@
     const asWhere = p => !p ? "--" : p.kind === "wifi" ? `${p.gear} · ${p.ssid || "Wi-Fi"}${p.band ? ` (${String(p.band).replace("g", " GHz").replace("2 GHz", "2.4 GHz")})` : ""}`
         : p.kind === "wired" ? `${p.gear} · port ${p.port}` : p.kind === "vpn" ? `VPN (${p.gear})` : p.gear || "--";
     const asHow = new Set();
+    // The offer (D-1072; built 26 Nov 2026): Learn always runs, the findings wait
+    // for a Yes. A new install gets a pop-up, once per opening of the dashboard,
+    // once Learn has a first result: Yes, No (never asked again) or Ask Me Later
+    // (3 days). Run Assessment on the page says Yes at any time.
+    const AS_OFFER_TEXT = `<p>The dashboard has learned your network: where every client connects, and how far Firewalla can enforce its settings for each one (some gear that isn't Firewalla's stops VqLAN, Isolation or rules from working).</p>
+        <p>The <b>Network Assessment</b> uses that to check your existing groups, target lists and rules, and recommends only what can work on your gear. Where the gear itself is the problem, it says what to change.</p>
+        <ul><li>Findings from your settings come at once.</li><li>Findings from traffic come after 7 days, and "never used, remove it" after 30 days.</li><li>It never changes the router: you make each change yourself in the Firewalla app.</li></ul>`;
+    let asOfferShown = false;
+    // Equipment pictures (D-1075 part 1, 26 Nov 2026): each unit's picture for
+    // Topology, picked here: the standard picture, one of our drawings (for
+    // gear that isn't Firewalla's), or your own photo (shrunk here to at most
+    // 1200 px, kept only on the NAS).
+    function gearPicCell(unit, fw, guess, pick, kind) {
+        const art = window.DashboardGearArt || { list: [], svg: () => "" };
+        const value = pick?.photo ? "photo" : pick?.art || "standard";
+        const preview = pick?.photo ? `<img class="gear-thumb" src="/api/gear-pictures/photo/${encodeURIComponent(pick.photo)}" alt="Your photo">`
+            : pick?.art || !fw ? art.svg(pick?.art || guess) : `<span class="small muted">Standard</span>`;
+        const label = id => art.list.find(x => x.id === id)?.label || id;
+        const models = (art.models || []).filter(x => x.kind === kind);
+        const opt = (v, t) => `<option value="${v}"${v === value ? " selected" : ""}>${F.esc(t)}</option>`;
+        const groups = fw ? [["Firewalla Models", models]] : [...new Set(art.list.map(x => x.group))].map(g => [g, art.list.filter(x => x.group === g)]);
+        return `<div class="gear-pic">${preview}<select class="gear-pick" data-unit="${F.esc(unit)}" aria-label="Picture">${opt("standard", fw ? "Standard Picture" : `Standard: ${label(guess)}`)}
+            ${groups.map(([g, list]) => `<optgroup label="${F.esc(g)}">${list.map(x => opt(x.id, x.label)).join("")}</optgroup>`).join("")}${opt("photo", "Your Own Photo…")}</select></div>`;
+    }
+    async function gearPhotoData(file) {
+        const url = URL.createObjectURL(file);
+        try {
+            const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; });
+            const k = Math.min(1, 1200 / Math.max(img.width, img.height));
+            const c = document.createElement("canvas");
+            c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+            c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+            return c.toDataURL(file.type === "image/png" ? "image/png" : "image/jpeg", .85);
+        } finally { URL.revokeObjectURL(url); }
+    }
+    document.addEventListener("change", async e => {
+        const sel = e.target.closest?.("select.gear-pick");
+        if (!sel) return;
+        const unit = sel.dataset.unit, again = () => { window.FirewallaDashboard?.state?.sources?.forEach(x => { x.at = 0; }); window.FirewallaDashboard?.refresh?.(); };
+        if (sel.value !== "photo") {
+            const r = await post("/api/gear-pictures/pick", { unit, art: sel.value });
+            if (!r.ok) say(r.error || "Couldn't save that.");
+            again();
+            return;
+        }
+        const input = Object.assign(document.createElement("input"), { type: "file", accept: "image/jpeg,image/png,image/webp" });
+        input.addEventListener("change", async () => {
+            const file = input.files?.[0];
+            if (!file) { again(); return; }
+            let data;
+            try { data = await gearPhotoData(file); } catch { say("That file can't be read as a picture."); again(); return; }
+            const r = await post("/api/gear-pictures/photo", { unit, data });
+            if (!r.ok) say(r.error || "Couldn't save the photo.");
+            again();
+        });
+        input.addEventListener("cancel", again);
+        input.click();
+    });
+    async function asOffer(choice) {
+        const r = await post("/api/assessment/offer", { choice });
+        if (!r.ok) { say(r.error || "Couldn't save that."); return r; }
+        window.FirewallaDashboard?.state?.sources?.forEach(x => { x.at = 0; });
+        window.FirewallaDashboard?.refresh?.();
+        return r;
+    }
+    views.assessmentOffer = data => {
+        const o = data?.assessment?.offer;
+        if (asOfferShown || !o?.ask) return;
+        const dlg = document.getElementById("infoDialog");
+        if (!dlg || dlg.open) return;   // another pop-up is open: asked at the next look
+        asOfferShown = true;
+        document.getElementById("infoTitle").textContent = "Run a Network Assessment?";
+        const box = document.getElementById("infoBody");
+        box.innerHTML = `<div class="as-offer">${AS_OFFER_TEXT}
+            <div class="q-ask-row"><button type="button" class="btn primary" data-as-offer="yes">Yes</button><button type="button" class="btn" data-as-offer="no">No</button><button type="button" class="btn" data-as-offer="later">Ask Me Later</button></div>
+            <div class="small muted">No: you won't be asked again. Ask Me Later: asked again in 3 days. Either way, Run Assessment on Rules & Access › Network Assessment starts it whenever you want.</div></div>`;
+        box.querySelectorAll("button[data-as-offer]").forEach(b => b.addEventListener("click", async () => {
+            const choice = b.dataset.asOffer;
+            const r = await asOffer(choice);
+            if (!r.ok) return;
+            dlg.close();
+            if (choice === "yes") window.FirewallaDashboard?.showPage?.(F.target("assessment", { at: "as-findings" }));
+        }));
+        dlg.showModal();
+    };
+    // Every drawing in one place (owner, 26 Nov 2026): folded under Your
+    // Equipment, drawn only while open (there are a few hundred), each with
+    // sample lights (port 1 linked at 1G and busy, two more ports in use).
+    function asGallery() {
+        const G = window.DashboardGearArt;
+        if (!G) return "";
+        const all = [...(G.models || []).map(x => ({ ...x, group: "Firewalla Models" })), ...G.list];
+        const groups = [...new Set(all.map(x => x.group))];
+        const open = asHow.has("gallery");
+        const card = x => `<div class="as-art">${G.svg(x.id, { up: true, color: 1000, act: true, lit: 3 }, 64)}<div class="small">${F.esc(x.label.replace(/^(TP-Link Omada |Ubiquiti UniFi )/, ""))}</div></div>`;
+        return `<h3>Drawings <span class="small muted">· ${F.count(all.length)} to pick from</span> <a href="#" class="pl-how" data-view-action="as-how" data-value="gallery">${open ? "Hide" : "Show All"}</a></h3>
+            ${open ? groups.map(g => { const list = all.filter(x => x.group === g); return `<h4 class="as-art-group">${F.esc(g)} <span class="small muted">· ${F.count(list.length)}</span></h4><div class="as-art-grid">${list.map(card).join("")}</div>`; }).join("") : ""}`;
+    }
     views.assessment = {
         noFilterBar: true,
         source: () => "/api/assessment",
@@ -3062,6 +3160,7 @@
         async onAction(action, value) {
             if (action === "as-answer") { const [id, answer] = JSON.parse(value); return post("/api/assessment/answer", { id, answer }); }
             if (action === "as-how") { if (asHow.has(value)) asHow.delete(value); else asHow.add(value); return null; }
+            if (action === "as-offer") return asOffer(value);
             if (action === "as-decline") { const [what, id] = String(value).split(/\|(.*)/s); return post("/api/assessment/decline", { id, offer: what === "offer" }); }
             return null;
         },
@@ -3077,7 +3176,8 @@
             (window.FirewallaExports ||= {}).asClients = { header: ["Client", "Level", "Why", "Where", "Network", "Address", "Now"],
                 rows: clients.map(c => [c.name, c.level, c.why, asWhere(c.place), c.network || "", c.ip || "", c.online ? "Online" : "Offline"]) };
             window.FirewallaExports.asGear = { header: ["Name", "Kind", "Connects To"],
-                rows: a.gear.map(g => [g.name, g.kind === "router" ? "Router" : g.kind === "switch" ? "Switch" : "Access Point", g.kind === "router" ? "Internet" : g.uplink || ""]) };
+                rows: [...a.gear.map(g => [g.name, g.kind === "router" ? "Router" : g.kind === "switch" ? "Switch" : "Access Point", g.kind === "router" ? "Internet" : g.uplink || ""]),
+                    ...(a.others || []).map(o => [o.label, "Not Firewalla", o.where])] };
             const ring = (label, count, tone, detail) => F.ring(label, count, count / total, count ? tone : "", F.target("assessment", { ...f, level: f.level === label ? undefined : label }), detail);
             const h = a.history || {};
             const histDays = h.days_held;
@@ -3112,8 +3212,12 @@
                 ${fNo.length ? `<details class="lc-declined"><summary>Declined <span class="small muted">· ${F.count(fNo.length)} · not offered again</span></summary>
                     ${fNo.map(x => `<div class="lc-no"><span class="pl-tag muted">${AS_KIND[x.kind] || "FINDING"}</span> <b>${F.esc(x.title)}</b>
                         <span class="muted">· declined ${F.dateTime(x.declined)}</span> ${btn("plain", "as-decline", "offer|" + x.id, "Offer Again")}</div>`).join("")}</details>` : ""}</section>`;
+            const pics = a.pictures || {};
             const gearRows = a.gear.map(g => `<tr><td><b>${F.esc(g.name)}</b></td><td>${g.kind === "router" ? "Router" : g.kind === "switch" ? "Switch" : "Access Point"}</td>
-                <td>${g.kind === "router" ? "Internet" : F.esc(g.uplink ? `${g.uplink}${g.uplink_type === "mesh" ? " (Wi-Fi mesh)" : ""}` : "--")}</td></tr>`).join("");
+                <td>${g.kind === "router" ? "Internet" : F.esc(g.uplink ? `${g.uplink}${g.uplink_type === "mesh" ? " (Wi-Fi mesh)" : ""}` : "--")}</td>
+                <td>${g.unit ? gearPicCell(g.unit, true, null, pics[g.unit], g.kind) : ""}</td></tr>`).join("")
+                + (a.others || []).map(o => `<tr><td><b>${F.esc(o.label)}</b></td><td><span class="warn">Not Firewalla</span></td><td>${F.esc(o.where)}</td>
+                <td>${gearPicCell(o.id, false, o.guess, pics[o.id])}</td></tr>`).join("");
             const linkRows = (a.links || []).map(l => `<div class="small"><b>${F.esc(l.where)}</b> · carries ${F.esc(l.carries.join(", "))} · <span class="${l.answer ? "muted" : "warn"}">${F.esc(l.answer || "not answered yet")}</span></div>`).join("");
             const rows = clients.map(c => `<tr>
                 <td>${c.mac ? `<a href="#" data-client="${F.esc(c.mac)}">${F.esc(c.name)}</a>` : F.esc(c.name)}</td>
@@ -3129,16 +3233,21 @@
                     ${ring("Not Seen Yet", n("Not Seen Yet"), "", "offline or just arrived")}
                 </div>
                 ${asksBox}
-                ${findingsBox}
+                ${a.offer?.state === "yes" ? findingsBox : `<section class="st-box" id="as-findings"><div class="st-head"><h2>Findings</h2>
+                    <span class="small muted">${a.offer?.state === "no" ? `you chose No${a.offer.at ? ` on ${F.dateTime(a.offer.at)}` : ""}: not asked again`
+                        : a.offer?.state === "later" ? `Ask Me Later: asked again ${F.dateTime(a.offer.ask_after)}` : "not started"}</span></div>
+                    <div class="as-offer">${AS_OFFER_TEXT}</div>
+                    <div class="lc-acts">${btn("pl-act blue", "as-offer", "yes", "Run Assessment", "Start the assessment: its findings show here and count in Needs You.")}</div></section>`}
                 <section class="st-box"><div class="st-head"><h2>Enforcement Levels</h2><a href="#" class="pl-how" data-view-action="as-how" data-value="levels">ⓘ What They Mean</a>
                     <span class="small muted">${histDays != null ? F.esc(h.text || "") + (h.checked_at ? ` · checked ${F.dateTime(h.checked_at)}` : "") : "Router history: checked once a day"}</span></div>
                     ${asHow.has("levels") ? `<ul class="small muted lc-what">${Object.entries(AS_MEANS).map(([k, v]) => `<li><b>${F.esc(k)}:</b> ${F.esc(v)}</li>`).join("")}
                         <li>A router behind the Firewalla can't be found from the maker (TP-Link makes routers and smart plugs) or Firewalla's device type, so <b>Hidden</b> comes only from your answer.</li>
                         <li>No router rule ever sees two clients on the same network talking, on Firewalla gear or not (tested 16 Nov 2026): between them only VqLAN, Isolation and Allowed Devices decide.</li></ul>` : ""}
                     <div class="small muted">Between clients on the same network, only Firewalla's switches and access points can enforce VqLAN, Isolation and Allowed Devices. This page finds where each client is, so the assessment never recommends something that can't work there.</div></section>
-                <section class="st-box"><div class="st-head"><h2>Your Equipment</h2><span class="small muted">${F.count(a.gear.length)} Firewalla units${(a.links || []).length ? ` · ${F.count(a.links.length)} non-Firewalla link${a.links.length === 1 ? "" : "s"}` : ""}</span></div>
-                    <div class="al-hist-wrap"><table class="cl-table" data-export="asGear"><thead><tr><th>Name</th><th>Kind</th><th>Connects To</th></tr></thead><tbody>${gearRows}</tbody></table></div>
-                    ${linkRows ? `<h3>Non-Firewalla Links Between Firewalla Gear</h3>${linkRows}` : ""}</section>
+                <section class="st-box"><div class="st-head"><h2>Your Equipment</h2><span class="small muted">pick each unit's picture for Topology · ${F.count(a.gear.length)} Firewalla units${(a.links || []).length ? ` · ${F.count(a.links.length)} non-Firewalla link${a.links.length === 1 ? "" : "s"}` : ""}</span></div>
+                    <div class="al-hist-wrap"><table class="cl-table" data-export="asGear"><thead><tr><th>Name</th><th>Kind</th><th>Connects To</th><th>Picture</th></tr></thead><tbody>${gearRows}</tbody></table></div>
+                    ${linkRows ? `<h3>Non-Firewalla Links Between Firewalla Gear</h3>${linkRows}` : ""}
+                    ${asGallery()}</section>
                 <section class="st-box"><div class="cl-tools"><h2 style="margin:0">Clients${f.level ? `: ${F.esc(f.level)}` : ""}</h2>
                     <label class="cl-search"><span aria-hidden="true">⌕</span><input data-view-search="search" aria-label="Search clients" placeholder="Search client, level, place, network" value="${F.esc(f.search || "")}"></label>
                     ${f.level ? F.go("× Show All", F.target("assessment", { ...f, level: undefined })) : ""}</div>
