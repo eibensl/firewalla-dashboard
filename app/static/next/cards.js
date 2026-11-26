@@ -474,10 +474,14 @@
                 assessment: w(d.assessment?.open, "Network Assessment item", "to answer or look at", d.assessment?.newest_at || 0),
                 // Changed Address (D-936): an onboarded phone's private Wi-Fi address rotated; and (to-do
                 // item 16, 26 Nov 2026) clients waiting in Quarantine to be onboarded.
+                // Counted from the groups data, refreshed every few seconds, so a client moved out of
+                // Quarantine (here or in the Firewalla app) leaves the count at once (owner, 26 Nov 2026).
                 onboarding: (() => {
-                    const r = d.mac_rotation?.open || 0, q = d.quarantine?.open || 0;
+                    const members = ((d.groups?.groups || []).find(g => String(g.id) === "1") || {}).members || [];
+                    const found = new Map((d.devices || []).map(x => [String(x.mac || "").toUpperCase(), x.first_found || 0]));
+                    const r = d.mac_rotation?.open || 0, q = members.length;
                     return w(r + q, "client", q && r ? `to onboard (${q} in Quarantine, ${r} with a changed Wi-Fi address)` : q ? "in Quarantine, waiting to be onboarded" : "changed its Wi-Fi address (onboard the new entry)",
-                        Math.max(d.mac_rotation?.newest_at || 0, d.quarantine?.newest_at || 0));
+                        Math.max(d.mac_rotation?.newest_at || 0, ...members.map(m => found.get(String(m).toUpperCase()) || 0)));
                 })(),
                 // Left the health banner (22 Nov 2026): marked on their own pages.
                 inallowed: w(d.internet_page?.inbound_unexplained, "inbound connection", "let in without an allow rule"),

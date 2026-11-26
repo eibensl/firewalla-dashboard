@@ -1183,7 +1183,9 @@ def msp_worker():
                     break
             msp.update({"alarms": sorted(alarms, key=lambda a: -(a["ts"] or 0)), "alarms_at": time.time(),
                         "at": time.time(), "error": None})
-            state["msp_alarms"] = msp_alarm_summary(alarms, msp["alarms_at"])
+            # Keep the page's counts (needs a look...) until it rebuilds them just below, so Needs You
+            # never falls back to every active alarm in between (26 Nov 2026).
+            state["msp_alarms"] = {**(state.get("msp_alarms") or {}), **msp_alarm_summary(alarms, msp["alarms_at"])}
             msp_cache_save()
             try:
                 with alarm_lock:
