@@ -1110,6 +1110,9 @@ def initialize_questions():
                 origin_kind TEXT, origin_ref TEXT, origin_label TEXT, disagree TEXT);
             DELETE FROM kb WHERE status='suggested';
         """)
+        # The whole conversation an entry came from (owner, 26 Nov 2026).
+        if "conversation" not in {r[1] for r in c.execute("PRAGMA table_info(kb)")}:
+            c.execute("ALTER TABLE kb ADD COLUMN conversation TEXT")
 
 
 def question_item(kind, ref):
@@ -1681,7 +1684,29 @@ def kb_row(r):
     e = dict(r)
     e["about"] = json.loads(e["about"] or "[]")
     e["disagree"] = json.loads(e["disagree"]) if e["disagree"] else None
+    e["conversation"] = json.loads(e["conversation"]) if e.get("conversation") else []
     return e
+
+
+def kb_conversation(c, thread):
+    """A Questions conversation as it went, for its entry (owner, 26 Nov
+    2026: the whole back and forth, not just the last answer): each of your
+    questions and each of Claude's answers, with its time."""
+    out = []
+    for m in c.execute("SELECT * FROM messages WHERE thread_id=? ORDER BY at, id", (thread,)):
+        if m["role"] == "claude":
+            a = json.loads(m["answer"]) if m["answer"] else None
+            if not isinstance(a, dict):
+                continue
+            text = "\n".join(x for x in [str(a.get("answer") or a.get("summary") or "").strip(),
+                                          ("Do: " + str(a["recommend"]).strip()) if str(a.get("recommend") or "").strip() else "",
+                                          ("More: " + str(a["more"]).strip()) if str(a.get("more") or "").strip() else "",
+                                          ("Claude asked: " + str(a["ask_you"]).strip()) if str(a.get("ask_you") or "").strip() else ""] if x)
+            if text:
+                out.append({"role": "claude", "at": m["at"], "text": text})
+        elif str(m["text"] or "").strip():
+            out.append({"role": "you", "at": m["at"], "text": str(m["text"]).strip()})
+    return out
 
 
 def kb_notes(value):
@@ -1792,7 +1817,7 @@ def api_kb_draft(payload: dict = Body(default={})):
     fields = Fields(payload)
     thread = fields.row("thread") if payload.get("thread") not in (None, "") else None
     kind, ref = fields.text("kind", 300, strip=False), fields.text("ref", 300, strip=False)
-    title, text, suggested = "", "", None
+    title, text, suggested, conversation = "", "", None, []
     with questions_lock, questions_db() as c:
         if thread:
             t = c.execute("SELECT * FROM threads WHERE id=?", (thread,)).fetchone()
@@ -1803,6 +1828,7 @@ def api_kb_draft(payload: dict = Body(default={})):
             last = c.execute("SELECT answer FROM messages WHERE thread_id=? AND role='claude' ORDER BY at DESC, id DESC LIMIT 1", (thread,)).fetchone()
             last = json.loads(last["answer"]) if last and last["answer"] else None
             text, suggested = kb_answer_text(last), (last or {}).get("kb_suggest")
+            conversation = kb_conversation(c, thread)
         elif kind not in QUESTION_PAGES:
             return {"ok": False, "error": "Unknown kind of item."}
         old = c.execute("SELECT * FROM kb WHERE status='kept' AND origin_kind=? AND origin_ref=?", (kind, ref)).fetchone() if kind != "question" else None
@@ -1821,7 +1847,7 @@ def api_kb_draft(payload: dict = Body(default={})):
         title = label or title
     return {"ok": True, "entry": {"id": None, "title": title[:120], "text": text[:KB_MAX_TEXT],
                                    "about": kb_about(kind, ref), "origin_kind": kind, "origin_ref": ref, "origin_label": label,
-                                   "thread": thread if kind == "question" else None}}
+                                   "thread": thread if kind == "question" else None, "conversation": conversation}}
 
 
 @app.post("/api/kb/save")
@@ -1845,18 +1871,20 @@ def api_kb_save(payload: dict = Body(default={})):
     now = time.time()
     label = kb_origin_label(kind, ref) if kind and kind != "question" else None
     with questions_lock, questions_db() as c:
+        conversation = json.dumps(kb_conversation(c, thread)) if thread else None
         if not eid and kind and kind != "question":
             old = c.execute("SELECT id FROM kb WHERE status='kept' AND origin_kind=? AND origin_ref=?", (kind, ref)).fetchone()
             eid = old["id"] if old else None
         if eid:
             if not c.execute("SELECT 1 FROM kb WHERE id=?", (eid,)).fetchone():
                 return {"ok": False, "error": "That entry is gone."}
-            c.execute("UPDATE kb SET title=?, text=?, status='kept', confirmed_at=?, disagree=NULL" + (", about=?" if about is not None else "") + " WHERE id=?",
-                      (title, text, now, *([json.dumps(about)] if about is not None else []), eid))
+            c.execute("UPDATE kb SET title=?, text=?, status='kept', confirmed_at=?, disagree=NULL" + (", about=?" if about is not None else "")
+                      + (", conversation=?" if conversation else "") + " WHERE id=?",
+                      (title, text, now, *([json.dumps(about)] if about is not None else []), *([conversation] if conversation else []), eid))
         else:
-            eid = c.execute("""INSERT INTO kb (title, text, about, status, created_at, confirmed_at, origin_kind, origin_ref, origin_label)
-                               VALUES (?, ?, ?, 'kept', ?, ?, ?, ?, ?)""",
-                            (title, text, json.dumps(about if about is not None else kb_about(kind, ref) if kind else []), now, now, kind, ref, label)).lastrowid
+            eid = c.execute("""INSERT INTO kb (title, text, about, status, created_at, confirmed_at, origin_kind, origin_ref, origin_label, conversation)
+                               VALUES (?, ?, ?, 'kept', ?, ?, ?, ?, ?, ?)""",
+                            (title, text, json.dumps(about if about is not None else kb_about(kind, ref) if kind else []), now, now, kind, ref, label, conversation)).lastrowid
         if kind:
             c.execute("DELETE FROM kb WHERE status='suggested' AND origin_kind=? AND origin_ref=? AND id != ?", (kind, ref, eid))
         removed = 0

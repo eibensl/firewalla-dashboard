@@ -3038,6 +3038,117 @@
         }
     };
 
+    // Network Assessment (owner, 25 Nov 2026, D-1072), part 1: Learn. Where
+    // every client connects and its Enforcement Level (Full, Partial,
+    // Hidden), the questions about what the dashboard can't see (one box
+    // each, To Do first, the answer as buttons; answered ones folded away
+    // with Change), the Firewalla gear and the non-Firewalla links between
+    // it, and how much traffic history the router keeps. Read only.
+    const AS_TONE = { Full: "good", Partial: "warn", Hidden: "bad", Ask: "warn", "Not Seen Yet": "muted" };
+    const AS_MEANS = {
+        Full: "On Firewalla gear end to end: VqLAN, Isolation and Allowed Devices work between clients on the same network, and rules between networks and to the internet.",
+        Partial: "On a non-Firewalla switch or AP: VqLAN, Isolation and Allowed Devices don't work between it and clients on the same gear and network. Rules between networks and to the internet still do.",
+        Hidden: "Behind another router: Firewalla sees one address for all of them, so no rule can be made per client.",
+        Ask: "Not reported by any Firewalla AP or switch: answer the question about it.",
+        "Not Seen Yet": "Offline since the check started, or online for less than 10 minutes and not yet reported.",
+    };
+    const asWhere = p => !p ? "--" : p.kind === "wifi" ? `${p.gear} · ${p.ssid || "Wi-Fi"}${p.band ? ` (${String(p.band).replace("g", " GHz").replace("2 GHz", "2.4 GHz")})` : ""}`
+        : p.kind === "wired" ? `${p.gear} · port ${p.port}` : p.kind === "vpn" ? `VPN (${p.gear})` : p.gear || "--";
+    const asHow = new Set();
+    views.assessment = {
+        noFilterBar: true,
+        source: () => "/api/assessment",
+        every: 60,
+        async onAction(action, value) {
+            if (action === "as-answer") { const [id, answer] = JSON.parse(value); return post("/api/assessment/answer", { id, answer }); }
+            if (action === "as-how") { if (asHow.has(value)) asHow.delete(value); else asHow.add(value); return null; }
+            if (action === "as-decline") { const [what, id] = String(value).split(/\|(.*)/s); return post("/api/assessment/decline", { id, offer: what === "offer" }); }
+            return null;
+        },
+        render(data, ctx) {
+            const a = ctx.source;
+            if (!a) return `<div class="status-view"><section class="st-box">${F.empty("Loading…")}</section></div>`;
+            if (!a.ready) return `<div class="status-view"><section class="st-box">${F.empty(a.text || "Learning your network…")}</section></div>`;
+            const f = ctx.filter || {};
+            const q = String(f.search || "").toLowerCase();
+            const n = k => a.counts[k] || 0, total = a.clients.length || 1;
+            const clients = a.clients.filter(c => (!f.level || c.level === f.level)
+                && (!q || [c.name, c.ip, c.network, c.level, c.why, asWhere(c.place)].some(v => String(v ?? "").toLowerCase().includes(q))));
+            (window.FirewallaExports ||= {}).asClients = { header: ["Client", "Level", "Why", "Where", "Network", "Address", "Now"],
+                rows: clients.map(c => [c.name, c.level, c.why, asWhere(c.place), c.network || "", c.ip || "", c.online ? "Online" : "Offline"]) };
+            window.FirewallaExports.asGear = { header: ["Name", "Kind", "Connects To"],
+                rows: a.gear.map(g => [g.name, g.kind === "router" ? "Router" : g.kind === "switch" ? "Switch" : "Access Point", g.kind === "router" ? "Internet" : g.uplink || ""]) };
+            const ring = (label, count, tone, detail) => F.ring(label, count, count / total, count ? tone : "", F.target("assessment", { ...f, level: f.level === label ? undefined : label }), detail);
+            const h = a.history || {};
+            const histDays = h.days_held;
+            const todo = a.asks.filter(x => !x.answer), done = a.asks.filter(x => x.answer);
+            const choices = x => `<div class="lc-acts">${x.choices.map(([v, label]) => btn(x.answer === v ? "pl-act blue" : "plain", "as-answer", JSON.stringify([x.id, v]), F.esc(label))).join("")}
+                ${x.answer ? btn("plain", "as-answer", JSON.stringify([x.id, ""]), "Take Back", "Forget this answer: the question is asked again.") : ""}</div>`;
+            const askBox = x => `<article class="lc-item warn"><div class="lc-head"><span class="pl-tag warn">QUESTION</span> <b>${F.esc(x.title)}</b></div>
+                <dl class="lc-facts"><dt>What Was Found</dt><dd>${F.esc(x.text)}</dd></dl>${choices(x)}</article>`;
+            const asksBox = `<section class="st-box" id="as-asks"><div class="st-head"><h2>Questions</h2>
+                    <span class="small muted">${a.asks.length ? `${F.count(todo.length)} to answer · ${F.count(done.length)} answered` : "none"} · checked ${F.dateTime(a.at)} · looks again every minute</span></div>
+                ${todo.length ? `<div class="small muted">The dashboard can't see everything: each box asks about one thing it found. Your answer sets the level of the clients concerned and is kept.</div>${todo.map(askBox).join("")}`
+                    : `<div class="small good">Nothing to answer.</div>`}
+                ${done.length ? `<details class="lc-declined"><summary>Answered <span class="small muted">· ${F.count(done.length)}</span></summary>
+                    ${done.map(x => `<div class="lc-no"><b>${F.esc(x.title)}</b> <span class="muted">· ${F.esc(x.answer_label)} · ${F.dateTime(x.answered_at)}</span>
+                        <details class="as-change"><summary class="small">Change</summary>${choices(x)}</details></div>`).join("")}</details>` : ""}</section>`;
+            // Findings (D-1072, the ones that need no traffic history; owner, 25 Nov 2026: right after
+            // Questions): one box per job, as List Check's (D-1062), with Decline (D-1063).
+            // List Check's own findings: one line each, done on Target Lists.
+            const AS_KIND = { gear_partial: "NON-FIREWALLA GEAR", gear_hidden: "BEHIND ANOTHER ROUTER", unenforceable: "RULE CAN'T WORK" };
+            const finds = a.findings || [], fToDo = finds.filter(x => !x.declined), fNo = finds.filter(x => x.declined), lcs = a.list_check || [];
+            const findBox = x => `<article class="lc-item ${x.tone}"><div class="lc-head"><span class="pl-tag ${x.tone}">${AS_KIND[x.kind] || "FINDING"}</span> <b>${F.esc(x.title)}</b>
+                    <span class="small muted lc-since">since ${F.dateTime(x.first_seen)}</span></div>
+                <dl class="lc-facts">${x.facts.map(([k, v]) => `<dt>${F.esc(k)}</dt><dd>${F.esc(v)}</dd>`).join("")}
+                    <dt>Steps</dt><dd><ol class="lc-steps">${x.steps.map(st => `<li>${F.esc(st)}</li>`).join("")}</ol></dd></dl>
+                <div class="lc-acts">${btn("plain", "as-decline", "no|" + x.id, "Decline", "Don't offer this again: it leaves this list and Needs You, unless it becomes a different finding.")}</div></article>`;
+            const findingsBox = `<section class="st-box" id="as-findings"><div class="st-head"><h2>Findings</h2>
+                    <span class="small muted">${F.count(fToDo.length)} to do${fNo.length ? ` · ${F.count(fNo.length)} declined` : ""} · from your settings, no traffic needed · the 7-day and 30-day findings come later</span></div>
+                ${fToDo.length ? `<div class="small muted">Each box is one job on its own. The numbered steps inside a box belong together: do them in order. A box goes by itself once it is put right.</div>
+                    <h3>To Do <span class="small muted">· ${F.count(fToDo.length)}</span></h3>${fToDo.map(findBox).join("")}` : `<div class="small good">Nothing to do: every client is where Firewalla can enforce what it sets for it.</div>`}
+                ${lcs.length ? `<h3>From List Check <span class="small muted">· ${F.count(lcs.length)} · done on ${F.go("Target Lists", F.target("targetlists", { at: "tl-check" }))}</span></h3>
+                    ${lcs.map(x => `<div class="small">${F.go(F.esc(x.list || "List"), F.target("targetlists", { at: "tl-check" }))} · ${F.esc(x.title || "")}</div>`).join("")}` : ""}
+                ${fNo.length ? `<details class="lc-declined"><summary>Declined <span class="small muted">· ${F.count(fNo.length)} · not offered again</span></summary>
+                    ${fNo.map(x => `<div class="lc-no"><span class="pl-tag muted">${AS_KIND[x.kind] || "FINDING"}</span> <b>${F.esc(x.title)}</b>
+                        <span class="muted">· declined ${F.dateTime(x.declined)}</span> ${btn("plain", "as-decline", "offer|" + x.id, "Offer Again")}</div>`).join("")}</details>` : ""}</section>`;
+            const gearRows = a.gear.map(g => `<tr><td><b>${F.esc(g.name)}</b></td><td>${g.kind === "router" ? "Router" : g.kind === "switch" ? "Switch" : "Access Point"}</td>
+                <td>${g.kind === "router" ? "Internet" : F.esc(g.uplink ? `${g.uplink}${g.uplink_type === "mesh" ? " (Wi-Fi mesh)" : ""}` : "--")}</td></tr>`).join("");
+            const linkRows = (a.links || []).map(l => `<div class="small"><b>${F.esc(l.where)}</b> · carries ${F.esc(l.carries.join(", "))} · <span class="${l.answer ? "muted" : "warn"}">${F.esc(l.answer || "not answered yet")}</span></div>`).join("");
+            const rows = clients.map(c => `<tr>
+                <td>${c.mac ? `<a href="#" data-client="${F.esc(c.mac)}">${F.esc(c.name)}</a>` : F.esc(c.name)}</td>
+                <td data-sort="${["Hidden", "Ask", "Partial", "Not Seen Yet", "Full"].indexOf(c.level)}"><span class="pl-pill ${AS_TONE[c.level] || "muted"}">${F.esc(c.level)}</span></td>
+                <td class="small">${F.esc(c.why)}</td><td>${F.esc(asWhere(c.place))}</td><td>${F.esc(c.network || "--")}</td>
+                <td>${c.online ? `<span class="good">Online</span>` : `<span class="muted">Offline</span>`}</td></tr>`).join("");
+            return `<div class="status-view rules-view">
+                <div class="ring-row">
+                    ${ring("Full", n("Full"), "good", "on Firewalla gear")}
+                    ${ring("Partial", n("Partial"), "warn", "VqLAN, Isolation don't reach")}
+                    ${ring("Hidden", n("Hidden"), "bad", "behind another router")}
+                    ${ring("Ask", n("Ask"), "warn", "waiting for your answer")}
+                    ${ring("Not Seen Yet", n("Not Seen Yet"), "", "offline or just arrived")}
+                </div>
+                ${asksBox}
+                ${findingsBox}
+                <section class="st-box"><div class="st-head"><h2>Enforcement Levels</h2><a href="#" class="pl-how" data-view-action="as-how" data-value="levels">ⓘ What They Mean</a>
+                    <span class="small muted">${histDays != null ? F.esc(h.text || "") + (h.checked_at ? ` · checked ${F.dateTime(h.checked_at)}` : "") : "Router history: checked once a day"}</span></div>
+                    ${asHow.has("levels") ? `<ul class="small muted lc-what">${Object.entries(AS_MEANS).map(([k, v]) => `<li><b>${F.esc(k)}:</b> ${F.esc(v)}</li>`).join("")}
+                        <li>A router behind the Firewalla can't be found from the maker (TP-Link makes routers and smart plugs) or Firewalla's device type, so <b>Hidden</b> comes only from your answer.</li>
+                        <li>No router rule ever sees two clients on the same network talking, on Firewalla gear or not (tested 16 Nov 2026): between them only VqLAN, Isolation and Allowed Devices decide.</li></ul>` : ""}
+                    <div class="small muted">Between clients on the same network, only Firewalla's switches and access points can enforce VqLAN, Isolation and Allowed Devices. This page finds where each client is, so the assessment never recommends something that can't work there.</div></section>
+                <section class="st-box"><div class="st-head"><h2>Your Equipment</h2><span class="small muted">${F.count(a.gear.length)} Firewalla units${(a.links || []).length ? ` · ${F.count(a.links.length)} non-Firewalla link${a.links.length === 1 ? "" : "s"}` : ""}</span></div>
+                    <div class="al-hist-wrap"><table class="cl-table" data-export="asGear"><thead><tr><th>Name</th><th>Kind</th><th>Connects To</th></tr></thead><tbody>${gearRows}</tbody></table></div>
+                    ${linkRows ? `<h3>Non-Firewalla Links Between Firewalla Gear</h3>${linkRows}` : ""}</section>
+                <section class="st-box"><div class="cl-tools"><h2 style="margin:0">Clients${f.level ? `: ${F.esc(f.level)}` : ""}</h2>
+                    <label class="cl-search"><span aria-hidden="true">⌕</span><input data-view-search="search" aria-label="Search clients" placeholder="Search client, level, place, network" value="${F.esc(f.search || "")}"></label>
+                    ${f.level ? F.go("× Show All", F.target("assessment", { ...f, level: undefined })) : ""}</div>
+                    <div class="small muted lt-note">Showing ${F.count(clients.length)} of ${F.count(a.clients.length)} · an offline client keeps the place it was last seen · click a ring to show only that level</div>
+                    <div class="al-hist-wrap"><table class="cl-table" data-export="asClients"><thead><tr><th>Client</th><th>Level</th><th>Why</th><th>Where</th><th>Network</th><th>Now</th></tr></thead>
+                    <tbody>${rows}</tbody></table>${clients.length ? "" : `<div class="muted lt-empty">No clients match.</div>`}</div></section>
+            </div>`;
+        }
+    };
+
     // Client Onboarding (owner, 23 Nov 2026, D-932..D-934): every new client
     // starts in Quarantine. Pick one and press Onboard; the page then asks how
     // it gets its access, with no assumptions: mirror another client, or start
@@ -7996,6 +8107,14 @@ ${lines.map(l => `<span class="${adding ? "msp-add" : "msp-del"}">${F.esc(l)}</s
         return (s ? `<div class="small kb-note">Claude suggests keeping this: <strong>${F.esc(s.title)}</strong> <span class="muted">· Send to Knowledge Base drafts it for you</span></div>` : "")
             + (x && !F.easy() ? `<div class="small warn">Disagrees with your Knowledge Base: ${F.esc(x.why || "")} · ${F.go("Look at It", F.target("knowledge", {}))}</div>` : "");
     }
+    // The whole conversation an entry came from (owner, 26 Nov 2026): each
+    // question and answer, oldest first, folded under the entry.
+    function kbConversation(list, open) {
+        if (!list?.length) return "";
+        const asks = list.filter(m => m.role === "you").length;
+        return `<details class="kb-convo"${open ? " open" : ""}><summary class="small">Conversation · ${asks} question${asks === 1 ? "" : "s"}</summary>${list.map(m => `<div class="kb-msg ${m.role === "you" ? "you" : "claude"}">
+            <div class="small muted">${m.role === "you" ? "You" : "Claude"} · ${F.dateTime(m.at)}</div><div>${F.esc(m.text).replace(/\n/g, "<br>")}</div></div>`).join("")}</details>`;
+    }
     function kbEdit(e) {
         const dlg = document.getElementById("infoDialog"), box = document.getElementById("infoBody");
         document.getElementById("infoTitle").textContent = e.id ? "Edit Knowledge Base Entry" : "Send to Knowledge Base";
@@ -8006,8 +8125,9 @@ ${lines.map(l => `<span class="${adding ? "msp-add" : "msp-del"}">${F.esc(l)}</s
             <label class="kb-field"><span class="small muted">What We Know · 2 to 4 short lines: where things stand now</span><textarea class="kb-text" rows="4" maxlength="600">${F.esc(e.text || "")}</textarea></label>
             ${e.draft_text ? `<div class="small"><span class="muted">From the latest answer:</span> ${F.esc(e.draft_text)} <a href="#" class="kb-use">Use This Instead</a></div>` : ""}
             <div class="small"><span class="muted">About:</span> ${about}</div>
+            ${e.thread && e.conversation?.length ? `<div class="small muted">The whole conversation is kept with this entry:</div>${kbConversation(e.conversation, false)}` : ""}
             <div class="q-ask-row"><button type="button" class="btn primary kb-save">Save</button><button type="button" class="btn kb-cancel">Cancel</button></div>
-            <div class="small muted">${e.thread ? "Saving removes this conversation from Questions. " : ""}Claude gets every entry as a known fact.</div>
+            <div class="small muted">${e.thread ? "Saving moves this conversation from Questions to the entry. " : ""}Claude gets every entry's title and What We Know as a known fact.</div>
             <div class="small bad kb-err"></div></div>`;
         box.querySelector(".kb-use")?.addEventListener("click", ev => { ev.preventDefault(); box.querySelector(".kb-text").value = e.draft_text; });
         box.querySelector(".kb-cancel").addEventListener("click", () => dlg.close());
@@ -8054,7 +8174,7 @@ ${lines.map(l => `<span class="${adding ? "msp-add" : "msp-del"}">${F.esc(l)}</s
             const f = ctx.filter || {};
             const q = String(f.q || "").toLowerCase();
             const names = [...new Set(s.entries.flatMap(e => e.about.filter(a => a.kind !== "port").map(a => a.name)))].sort((a, b) => a.localeCompare(b));
-            let list = s.entries.filter(e => !q || [e.title, e.text, e.origin_label, ...e.about.map(a => a.name)].join(" ").toLowerCase().includes(q));
+            let list = s.entries.filter(e => !q || [e.title, e.text, e.origin_label, ...e.about.map(a => a.name), ...(e.conversation || []).map(m => m.text)].join(" ").toLowerCase().includes(q));
             if (f.about === "general") list = list.filter(e => !e.about.length);
             else if (f.about) list = list.filter(e => e.about.some(a => a.name === f.about));
             const aboutOf = e => e.about.map(a => F.esc(a.name)).join(", ") || `<span class="muted">General</span>`;
@@ -8064,13 +8184,14 @@ ${lines.map(l => `<span class="${adding ? "msp-add" : "msp-del"}">${F.esc(l)}</s
             const lines = t => F.esc(t).replace(/\n/g, "<br>");
             const rows = list.map(e => `<tr>
                 <td class="q-wrap"><strong>${F.esc(e.title)}</strong></td>
-                <td class="q-wrap kb-what">${lines(e.text)}${e.disagree ? `<div class="small warn">Claude saw something that disagrees (${F.dateTime(e.disagree.at)}): ${F.esc(e.disagree.why)}</div>` : ""}</td>
+                <td class="q-wrap kb-what">${lines(e.text)}${kbConversation(e.conversation, false)}${e.disagree ? `<div class="small warn">Claude saw something that disagrees (${F.dateTime(e.disagree.at)}): ${F.esc(e.disagree.why)}</div>` : ""}</td>
                 <td class="q-wrap small">${aboutOf(e)}</td>
                 <td data-sort="${e.confirmed_at}">${F.dateTime(e.confirmed_at)}</td>
                 <td class="q-wrap small">${from(e)}</td>
                 <td class="kb-acts">${e.disagree ? btn("plain ai", "kb-use", String(e.id), "Use Claude's Text") + btn("plain", "kb-keep", String(e.id), "Keep Mine") : ""}${btn("plain", "kb-edit", String(e.id), "Edit")}${btn("plain", "kb-confirm", String(e.id), "Still True")}${btn("plain", "kb-delete", String(e.id), "Delete")}</td></tr>`).join("");
-            (window.FirewallaExports ||= {}).knowledge = { header: ["Title", "What We Know", "About", "Last Confirmed", "From"],
-                rows: list.map(e => [e.title, e.text, e.about.map(a => a.name).join(", ") || "General", F.dateTime(e.confirmed_at), e.origin_label || ""]) };
+            (window.FirewallaExports ||= {}).knowledge = { header: ["Title", "What We Know", "About", "Last Confirmed", "From", "Conversation"],
+                rows: list.map(e => [e.title, e.text, e.about.map(a => a.name).join(", ") || "General", F.dateTime(e.confirmed_at), e.origin_label || "",
+                    (e.conversation || []).map(m => `${m.role === "you" ? "You" : "Claude"} (${F.dateTime(m.at)}): ${m.text}`).join("\n\n")]) };
             const waiting = s.entries.filter(e => e.disagree).length;
             const pick = `<select data-view-search="about" aria-label="About"><option value="">Everything</option><option value="general"${f.about === "general" ? " selected" : ""}>General</option>${names.map(n => `<option${n === f.about ? " selected" : ""}>${F.esc(n)}</option>`).join("")}</select>`;
             return `<div class="status-view q-view">

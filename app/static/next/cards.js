@@ -470,6 +470,8 @@
                 knowledge: w(d.knowledge?.waiting, "note from Claude", "to look at (a suggested entry, or one it disagrees with)", d.knowledge?.newest_at || 0),
                 // List Check (23 Nov 2026): target lists out of step with your clients, on the Target Lists page (24 Nov 2026, D-1062).
                 targetlists: w(d.list_check?.open, "target list item", "to check (List Check)", d.list_check?.newest_at || 0),
+                // Network Assessment (D-1072, 25 Nov 2026): questions to answer and findings to look at (List Check's stay under Target Lists).
+                assessment: w(d.assessment?.open, "Network Assessment item", "to answer or look at", d.assessment?.newest_at || 0),
                 // Changed Address (D-936): an onboarded phone's private Wi-Fi address rotated.
                 onboarding: w(d.mac_rotation?.open, "client", "changed its Wi-Fi address (onboard the new entry)", d.mac_rotation?.newest_at || 0),
                 // Left the health banner (22 Nov 2026): marked on their own pages.
@@ -2186,6 +2188,8 @@
         { id: "rules", label: "Rules", icon: "ruler", view: "rules", subtitle: "Every Firewalla rule · what each does, how often it is used, Firewalla's own protections · read only" },
         { id: "groups", label: "Groups", icon: "user-group", view: "groups", subtitle: "Your Firewalla groups · who is in each, what applies to them, which rule wins · read only" },
         { id: "targetlists", label: "Target Lists", icon: "list-lines", view: "targetlists", subtitle: "Every one of your target lists and every line: its address, ports, the client that has it, and the rules it feeds · read only" },
+        // Network Assessment (owner, 25 Nov 2026, D-1072): part 1, Learn: where every client connects and how far Firewalla can enforce rules for it.
+        { id: "assessment", label: "Network Assessment", icon: "net-search", view: "assessment", subtitle: "Where every client connects and how far Firewalla can enforce rules for it · questions about what the dashboard can't see · read only" },
         { id: "howto", label: "Show Me How", icon: "lightbulb", view: "howto", subtitle: "Test communications against your rules: whether they make your test conditions true, what keeps them from being true, every pair, and the exact Firewalla steps to make them true · read only" },
         { id: "sitetest", label: "Test a Website", icon: "flask", view: "sitetest", subtitle: "Use a site on one client and see what it was blocked from, and by which rule · works on phones and tablets · read only" },
         // Pages of their own since the 20 Nov 2026 page walk.
@@ -2263,7 +2267,7 @@
         // Internal and External) are sub-headings in its pop-out.
         { id: "s-equipment", label: "Internet & Equipment", icon: "router-signal", pages: ["internet", "network", "netmanager", "vpn", "equipment", "radios"] },
         { id: "s-devices", label: "Clients", icon: "devices", pages: ["devices", "wifi", "wired", "groups", "onboarding", "offboarding"] },
-        { id: "s-local", label: "Rules & Access", icon: "two-way", pages: ["policy", "violations", "rulepriority", "trafficpath", "decided", "allowed", "planned", "openunused", "rules", "targetlists", "howto"] },
+        { id: "s-local", label: "Rules & Access", icon: "two-way", pages: ["assessment", "policy", "violations", "rulepriority", "trafficpath", "decided", "allowed", "planned", "openunused", "rules", "targetlists", "howto"] },
         { id: "s-traffic", label: "Traffic", icon: "globe",
             groups: [{ label: "Internal", pages: ["internal", "localblocked"] },
                 { label: "External", pages: ["flows", "outbound", "patterns", "inbound", "inallowed", "alarms", "activity", "sitetest"] }],

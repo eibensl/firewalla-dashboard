@@ -2354,6 +2354,10 @@ span.ct-planned { color: var(--warn-text); }
 .kb-acts .pl-btn { margin-right: 4px; }
 .kb-what { min-width: 280px; }
 .kb-note { color: var(--claude-text); }
+.kb-convo { margin-top: 6px; }
+.kb-convo summary { cursor: pointer; color: var(--muted); }
+.kb-msg { margin: 6px 0 0; padding: 4px 8px; border-left: 3px solid var(--line-strong); border-radius: 4px; }
+.kb-msg.claude { border-left-color: var(--claude-text); }
 .pl-why { margin-top: 8px; padding: 8px 10px; border-radius: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px;
     background: color-mix(in srgb, var(--claude) 7%, transparent); border: 1px solid color-mix(in srgb, var(--claude) 22%, transparent); }
 .pl-why-head { font-weight: 600; font-size: 12px; color: var(--claude-text); }

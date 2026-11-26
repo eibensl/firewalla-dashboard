@@ -64,6 +64,9 @@ from listcheck import (
 from onboarding import (   # Client Onboarding / Offboarding (its addresses register when it loads)
     rotation_worker,
 )
+from assessment import (   # Network Assessment, part 1: Learn (D-1072)
+    assessment_worker,
+)
 from traffic import (
     DEST_LIST_DIR, DEST_SOURCES, dest_fetch, dest_lists_status, dest_lists_worker, dest_load,
     internet_page_worker, msp_worker, outbound_worker, traffic_worker,
@@ -235,6 +238,7 @@ def startup():
         accuracy_worker,
         list_check_worker,
         rotation_worker,
+        assessment_worker,
     ):
         start_worker(work)
 

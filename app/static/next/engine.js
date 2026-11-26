@@ -1131,6 +1131,7 @@
         sliders: '<path d="M4 6h16M4 12h16M4 18h16" opacity=".55"/><circle class="ni-k1" cx="14" cy="6" r="2"/><circle class="ni-k2" cx="10" cy="12" r="2"/><circle class="ni-k3" cx="15" cy="18" r="2"/>',   // Settings (the knobs slide)
         exchange: '<path d="M4 8h15M15 4l4 4-4 4M20 16H5M9 12l-4 4 4 4"/>',   // Allowed Connections
         "check-list": '<rect x="4" y="3.5" width="16" height="17" rx="1.5"/><path d="M7.5 9l1.5 1.5 3-3M14 9h3M7.5 15l1.5 1.5 3-3M14 15h3"/>',   // Decided
+        "net-search": '<circle cx="10" cy="10" r="6"/><path d="M14.5 14.5L20 20"/><circle cx="10" cy="7.5" r="1.2"/><circle cx="7.5" cy="12" r="1.2"/><circle cx="12.5" cy="12" r="1.2"/><path d="M10 8.7v1.3M10 10l-1.8 1.2M10 10l1.8 1.2"/>',   // Network Assessment
         clipboard: '<rect x="5" y="4.5" width="14" height="17" rx="1.5"/><path d="M9 4.5v-1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1M8.5 10h7M8.5 13.5h7M8.5 17h4"/>',   // Planned Changes
         "first-aid": '<rect x="3" y="6.5" width="18" height="14" rx="2"/><path d="M8.5 6.5v-2a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v2M12 10.5v6M9 13.5h6"/>',   // Equipment Health
         "radio-tower": '<path d="M12 10v11M8 21h8"/><circle cx="12" cy="8" r="1.5"/><path class="ni-b1" d="M8.5 4.5a5 5 0 0 0 0 7M15.5 4.5a5 5 0 0 1 0 7"/><path class="ni-b2" d="M5.5 2a9 9 0 0 0 0 12M18.5 2a9 9 0 0 1 0 12"/>',   // Wi-Fi Radios
