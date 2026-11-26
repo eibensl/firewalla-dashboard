@@ -288,6 +288,11 @@ def rotation_check():
         events = list(st["events"])
     open_ = [e for e in events if not e.get("acked")]
     state["mac_rotation"] = {"events": events[-50:], "open": len(open_), "newest_at": max((e["at"] for e in open_), default=0), "at": now}
+    # Clients waiting in Quarantine (to-do item 16, owner 26 Nov 2026): a Needs You
+    # count on the Onboarding row; the newest is the latest one Firewalla first saw.
+    members = next((g.get("members") or [] for g in (state.get("groups") or {}).get("groups") or [] if str(g.get("id")) == QUARANTINE), [])
+    found = [(devices.get(str(m).upper()) or {}).get("first_found") or 0 for m in members]
+    state["quarantine"] = {"open": len(members), "newest_at": max(found, default=0), "at": now}
 
 
 def rotation_worker():

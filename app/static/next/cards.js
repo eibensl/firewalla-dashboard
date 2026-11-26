@@ -472,8 +472,13 @@
                 targetlists: w(d.list_check?.open, "target list item", "to check (List Check)", d.list_check?.newest_at || 0),
                 // Network Assessment (D-1072, 25 Nov 2026): questions to answer and findings to look at (List Check's stay under Target Lists).
                 assessment: w(d.assessment?.open, "Network Assessment item", "to answer or look at", d.assessment?.newest_at || 0),
-                // Changed Address (D-936): an onboarded phone's private Wi-Fi address rotated.
-                onboarding: w(d.mac_rotation?.open, "client", "changed its Wi-Fi address (onboard the new entry)", d.mac_rotation?.newest_at || 0),
+                // Changed Address (D-936): an onboarded phone's private Wi-Fi address rotated; and (to-do
+                // item 16, 26 Nov 2026) clients waiting in Quarantine to be onboarded.
+                onboarding: (() => {
+                    const r = d.mac_rotation?.open || 0, q = d.quarantine?.open || 0;
+                    return w(r + q, "client", q && r ? `to onboard (${q} in Quarantine, ${r} with a changed Wi-Fi address)` : q ? "in Quarantine, waiting to be onboarded" : "changed its Wi-Fi address (onboard the new entry)",
+                        Math.max(d.mac_rotation?.newest_at || 0, d.quarantine?.newest_at || 0));
+                })(),
                 // Left the health banner (22 Nov 2026): marked on their own pages.
                 inallowed: w(d.internet_page?.inbound_unexplained, "inbound connection", "let in without an allow rule"),
                 inbound: w((d.internet_page?.spikes || []).length, "inbound spike", "(an hour at 3x the usual blocked attempts)"),
