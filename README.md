@@ -14,7 +14,7 @@ This guide installs it on a **Synology NAS** with Container Manager. It takes ab
 
 * A **Firewalla Gold or Purple** (Gold Pro, Gold Plus, Gold SE, Gold, Purple, Purple SE) running in **Router mode**.
 * The **Firewalla app** on your phone, signed in as the box's owner.
-* A **Synology NAS** with DSM 7.2 or later that can run **Container Manager** (most Plus models; check Package Center), on a network your Firewalla manages, with about **2 GB of free memory**.
+* A **Synology NAS** with DSM 7.2 or later that can run **Container Manager** (most Plus models; check Package Center), on a network your Firewalla manages, with about **2 GB of free memory**. On **Proxmox** instead, see [Running It on Proxmox](#running-it-on-proxmox-untested).
 * A computer on the same network, with a web browser.
 * Optional:
   * **Firewalla MSP**, for your target lists in the rule pop-ups; it is required to read target-list contents for the **Show Me How** function, which gives detailed instructions for adding or removing client access based on your existing rules and groups.
@@ -170,6 +170,7 @@ A Claude **Pro or Max subscription doesn't cover this**, and its sign-in can't b
 
 * You pay only for what is used: each answer costs about **2 to 5 cents**. (Anthropic charges by "tokens", pieces of words: for Claude Sonnet, $2 per million tokens read and $10 per million written.)
 * A home network typically costs **about $5 to $20 a month**.
+* Choose **Claude Haiku** in the setup page's step 6 to pay **about a twentieth** of that ($0.10 per million tokens read, $0.50 written). Its answers are shorter and less careful, but fine for everyday questions. Claude Sonnet is the default.
 * The dashboard's own daily limits (40 Ask Now questions and 24 hourly checks) keep it under **about $60 a month** even when used a lot.
 * You buy credit ahead (prepaid), and the **monthly spend limit** you set in the Console is a hard cap. When the credit or limit runs out, Claude simply stops answering; the rest of the dashboard carries on.
 * The dashboard's **Settings** page shows an estimate of each day's cost; the Console shows the real bill.
@@ -260,6 +261,27 @@ In **File Station**, open **docker › firewalla-dashboard › config › copy_i
 * **MSP › Settings › API Tokens:** delete the dashboard's token.
 * **Your email account:** delete the dashboard's app password.
 * **Firewalla app:** remove the NAS's IP reservation only if you don't want it any more.
+
+---
+
+## Running It on Proxmox (Untested)
+
+The dashboard runs anywhere Docker runs, so a **Proxmox** server works too: inside a small Linux container (LXC) or a virtual machine, with Docker in it. This hasn't been tried yet, so treat it as a guide and say how it went.
+
+1. In Proxmox, create a **Debian 12 LXC** (or a VM) with about **2 cores, 2 GB of memory and 10 GB of disk**, on a network your Firewalla manages, with a **fixed address** (see [Give the NAS a Fixed Address](#give-the-nas-a-fixed-address): the same applies to the container).
+2. If it is an LXC: in its **Options**, turn on **Nesting** (and **keyctl** if your Proxmox shows it), so Docker can run inside it. An unprivileged container is fine.
+3. Start it, open its console and install Docker:
+   ```
+   apt update && apt install -y docker.io docker-compose-plugin
+   ```
+4. Copy the dashboard's files into a folder there (for example `/opt/firewalla-dashboard`), the same files as [Step 2](#step-2-put-the-dashboards-files-on-the-nas).
+5. In that folder, start it:
+   ```
+   docker compose up -d --build
+   ```
+6. Find the setup code with `docker compose logs dashboard` (or read `config/setup_code.txt`), then open `http://<the container's address>:8180/setup` and follow it, as in [Step 5](#step-5-open-the-setup-page-and-follow-it).
+
+To update: copy the new files over (keeping `config`, `data`, `logs` and `.env`), then run `docker compose up -d --build` again.
 
 ---
 

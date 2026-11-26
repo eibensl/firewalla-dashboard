@@ -242,6 +242,7 @@
             <ul>
                 <li>You pay only for what is used: each answer costs about <strong>2 to 5 cents</strong>. (Anthropic charges by "tokens", pieces of words: for Claude Sonnet, $2 per million tokens read and $10 per million written.)</li>
                 <li>A home network typically costs <strong>about $5 to $20 a month</strong>.</li>
+                <li>Pick <strong>Claude Haiku</strong> below to pay <strong>about a twentieth</strong> of that ($0.10 per million tokens read, $0.50 written): its answers are shorter and less careful, but fine for everyday questions.</li>
                 <li>The dashboard's own daily limits (40 Ask Now questions and 24 hourly checks) keep it under <strong>about $60 a month</strong> even when used a lot.</li>
                 <li>You buy credit ahead (prepaid), and the <strong>monthly spend limit</strong> you set in the Console is a hard cap. When the credit or limit runs out, Claude simply stops answering; the rest of the dashboard carries on.</li>
                 <li>The dashboard's Settings page shows an estimate of each day's cost; the Console shows the real bill.</li>
@@ -260,6 +261,11 @@
             <p class="muted">Keep the key private, like a password: it is saved only on this NAS. To stop Claude at any time, delete the key in the Console.</p>
             <label for="apiKey">Anthropic API Key</label>
             <input id="apiKey" type="password" autocomplete="off" placeholder="sk-ant-…">
+            <label for="claudeModel">Which Claude</label>
+            <select id="claudeModel">
+                <option value="sonnet">Claude Sonnet: better answers (about 2 to 5 cents each)</option>
+                <option value="haiku">Claude Haiku: cheaper (a fraction of a cent each)</option>
+            </select>
             <div class="row"><button class="primary" data-do="s6">Save</button><button data-go="7">Skip</button></div>
             <div class="result" id="s6Result"></div>
         </section>
@@ -377,7 +383,7 @@ async function act(what, button) {
             $("s5Result").innerHTML = r.ok ? line(true, r.note) + `<div class="row"><button class="primary" data-go="6">Continue</button></div>` : line(false, r.error);
             await refresh();
         } else if (what === "s6") {
-            const r = await api("/api/setup/claude", { key: $("apiKey").value });
+            const r = await api("/api/setup/claude", { key: $("apiKey").value, model: $("claudeModel").value });
             $("apiKey").value = "";
             $("s6Result").innerHTML = r.ok ? line(true, r.note) : line(false, r.error);
             await refresh();
@@ -409,6 +415,7 @@ const KEY_WORDS = { ok: [true, "Anthropic accepted the key. Ask Claude is on."],
 let claudeTimer = null;
 function claudeStatus(waitForIt) {
     const c = state.claude || {};
+    if (state.settings?.FIREWALLA_CLAUDE_MODEL) $("claudeModel").value = state.settings.FIREWALLA_CLAUDE_MODEL;
     const words = c.key ? (KEY_WORDS[c.key_state] && c.worker_seen ? KEY_WORDS[c.key_state] : [null, "Saved. Waiting for the Claude worker to check it (up to a minute)…"]) : null;
     const box = $("s6Result");
     if (words && !box.dataset.typed) box.innerHTML = line(words[0], words[1]) + (words[0] === true ? `<div class="row"><button class="primary" data-go="7">Continue</button></div>` : "");

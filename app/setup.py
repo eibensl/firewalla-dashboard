@@ -78,7 +78,7 @@ def setup_key_name():
 # The settings this page writes, in the order they are kept in settings.env.
 SETTING_ORDER = ["FIREWALLA_SITE_NAME", "TZ", "FIREWALLA_SSH_HOST", "FIREWALLA_ROUTER_MODEL", "FIREWALLA_ROUTER_POLL_SECONDS",
                  "FIREWALLA_MSP_URL", "FIREWALLA_DASHBOARD_URL", "FIREWALLA_ALLOWED_HOSTS", "FIREWALLA_SITE_OTHERS",
-                 "FIREWALLA_HA_PAIRS", "FIREWALLA_SSH_COMPRESS"]
+                 "FIREWALLA_HA_PAIRS", "FIREWALLA_SSH_COMPRESS", "FIREWALLA_CLAUDE_MODEL"]
 
 # What the Not Set Up Yet table lists (file, what it is, needed to start).
 SETUP_FILES = [
@@ -240,7 +240,7 @@ def api_setup_state(request: Request):
     }
     if signed_in:
         out["settings"] = {k: s.get(k, "") for k in ("FIREWALLA_SITE_NAME", "TZ", "FIREWALLA_SSH_HOST", "FIREWALLA_ROUTER_MODEL",
-                                                     "FIREWALLA_DASHBOARD_URL", "FIREWALLA_ALLOWED_HOSTS", "FIREWALLA_MSP_URL")}
+                                                     "FIREWALLA_DASHBOARD_URL", "FIREWALLA_ALLOWED_HOSTS", "FIREWALLA_MSP_URL", "FIREWALLA_CLAUDE_MODEL")}
     return out
 
 
@@ -628,8 +628,14 @@ def api_setup_claude(request: Request, payload: dict = Body(default={})):
     key = str(payload.get("key") or "").strip()
     if not re.fullmatch(r"sk-ant-[A-Za-z0-9_\-]{20,300}", key):
         return {"ok": False, "error": "An Anthropic API key starts with sk-ant-. Copy it again from the Claude Console."}
+    # Which Claude answers (from the real install test, 24 Nov 2026: a cheaper choice): Sonnet
+    # (better answers) or Haiku (about a twentieth of the cost). Takes effect at Finish's restart.
+    model = str(payload.get("model") or "sonnet").strip().lower()
+    if model not in ("sonnet", "haiku"):
+        return {"ok": False, "error": "Pick Claude Sonnet or Claude Haiku."}
     setup_write_file("claude_api_key", key + "\n")
-    return {"ok": True, "note": "Saved. The Claude worker checks it with Anthropic within a minute."}
+    setup_write_settings({"FIREWALLA_CLAUDE_MODEL": model})
+    return {"ok": True, "note": f"Saved, with Claude {model.title()}. The Claude worker checks the key with Anthropic within a minute."}
 
 
 # ---------- step 7: done ----------
