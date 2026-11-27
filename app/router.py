@@ -1568,6 +1568,48 @@ def policy_rule_for_pid(pid):
     return policy_rules_by_pid.get(str(pid)) if pid is not None else None
 
 
+# ------------------------------------------------
+# Off the gear = offline (owner, 27 Nov 2026, D-1084). The router keeps a
+# client's last-active time fresh while an AP still lists it, and "online"
+# then waited 30 minutes more: a unit unplugged at 08:55 showed offline at
+# about 09:30. Now a client that an AP or a switch has listed turns offline
+# once no AP lists it and no switch port with a link holds it for
+# GEAR_GONE_SECONDS, unless the router heard it after it left (it came in
+# another way, e.g. a router port). The AP's own timeout (about 6 minutes
+# after power is cut, measured) still comes first. Clients no Firewalla AP
+# or switch has listed since the start keep the 30-minute timer, and
+# nobody is judged while the AP or switch reads are late.
+# ------------------------------------------------
+GEAR_GONE_SECONDS = 120
+GEAR_HEARD_AFTER_SECONDS = 60   # the router's stamp can trail the AP's last listing a little
+gear_seen = {}                  # MAC -> last time an AP listed it or a linked switch port held it
+
+
+def gear_presence(now):
+    """Notes who is on an AP or a linked switch port now; returns gear_seen,
+    or None when the AP or switch reads are too old to judge by."""
+    if now - float(state.get("wifi_last_update") or 0) > 30 or now - float(state.get("switch_last_update") or 0) > 60:
+        return None
+    for mac in state.get("wifi_stations") or {}:
+        gear_seen[str(mac).upper()] = now
+    for mac, w in (state.get("wired_clients") or {}).items():
+        if w.get("link_up") is not False:
+            gear_seen[str(mac).upper()] = now
+    for mac in [m for m, t in gear_seen.items() if now - t > 86400]:
+        del gear_seen[mac]   # gone a day: the 30-minute timer has long said offline
+    return gear_seen
+
+
+def gear_left_at(on_gear, mac, last_active, now):
+    """When the client left the APs and switches, if that makes it offline now; else None."""
+    at = (on_gear or {}).get(str(mac or "").upper())
+    if not at or now - at < GEAR_GONE_SECONDS:
+        return None
+    if last_active is not None and last_active > at + GEAR_HEARD_AFTER_SECONDS:
+        return None   # the router heard it after it left the gear
+    return at
+
+
 def refresh_hosts():
 
     from status import record_status_history, speedtest_scheduler_state, status_errors
@@ -1591,6 +1633,8 @@ def refresh_hosts():
             devices = []
             flow_sample_time = time.time()
             seen_flow_macs = set()
+            now_hosts = time.time()
+            on_gear = gear_presence(now_hosts)
 
             # Begin with the previously calculated rates. Firewalla
             # flowsummary counters remain unchanged between batched
@@ -1732,9 +1776,11 @@ def refresh_hosts():
                 else:
                     idle_seconds = None
 
+                left_gear_at = gear_left_at(on_gear, host.get("mac"), last_active, now_hosts)
                 online = (
                     idle_seconds is not None
                     and idle_seconds <= DEFAULT_OFFLINE_IDLE_SECONDS
+                    and left_gear_at is None
                 )
 
                 device_name = (
@@ -1759,6 +1805,7 @@ def refresh_hosts():
                         "last_active": last_active,
                         "idle_seconds": idle_seconds,
                         "online": online,
+                        "left_gear_at": left_gear_at,
                         "first_found": host.get("firstFound"),
                         "stale": host.get("stale"),
                         "inbytes": flowsummary.get("inbytes"),

@@ -57,6 +57,8 @@ from flows import local_history_fetch
 ASSESSMENT_FILE = os.environ.get("FIREWALLA_ASSESSMENT_FILE", "/data/assessment.json")
 ASSESSMENT_EVERY = 60                  # seconds between looks
 ASSESSMENT_HISTORY_EVERY = 24 * 3600   # how often the router's history length is checked
+ASSESSMENT_TRAFFIC_EVERY = 600         # how often the 7-day traffic findings are worked out again (D-1088)
+assessment_traffic = {"at": 0, "found": None, "days": 0}
 ASSESSMENT_HISTORY_DAYS = (1, 3, 7, 14, 30)
 ASSESSMENT_LATER = 3 * 86400            # Ask Me Later: asked again after this long
 ASSESSMENT_UNPLACED_WAIT = 600         # an online client no AP or switch reports is asked about after this long
@@ -291,10 +293,43 @@ def assessment_build(st):
     # List Check's open findings, one line each: they are done on Target Lists (owner, 25 Nov 2026).
     lc = [{"list": x.get("list"), "kind": x.get("kind"), "title": x.get("title") or x.get("text")}
           for x in (state.get("list_check") or {}).get("items") or [] if not x.get("declined")]
+    # Open But Unused's Partly Used rules, one line each: narrowed there (D-1088).
+    ou = assessment_partly_used(now)
     return {"at": now, "clients": clients, "counts": counts, "gear": gear, "links": links,
             "asks": sorted(asks.values(), key=lambda q: (q["answer"] is not None, q["title"])),
             "open_asks": sum(1 for q in asks.values() if q["answer"] is None),
-            "findings": findings, "open_findings": sum(1 for x in findings if not x["declined"]), "list_check": lc, "others": others}
+            "findings": findings, "open_findings": sum(1 for x in findings if not x["declined"]), "list_check": lc, "open_unused": ou, "others": others}
+
+
+def assessment_rules_say(rows, sides, groups):
+    """What your rules say for one device pair on one port, worked out as
+    Policy works it out (its rules, the router's credits for the pair on any
+    port, VqLAN and Isolation): "allowed", "blocked", "unclear" or "unknown"."""
+    from access import access_address_rules, access_isolated, access_local_rules, check_local_access
+    from policy import policy_verdict
+    rules, iso, credits = access_local_rules() + access_address_rules(), access_isolated(), {}
+    for src, dst, outcome, *_x, allowed_by, _bb in rows:
+        credits.setdefault((src, dst), set()).update(x for x in str(allowed_by or "").split(",") if x)
+
+    def say(src, dst, protocol, port):
+        x, y = sides.get(src), sides.get(dst)
+        if not (x and y):
+            return "unknown"
+        return policy_verdict(check_local_access(x, y, groups, rules, credits.get((src, dst), ()), port=(protocol, int(port)), isolated=iso))
+    return say
+
+
+def assessment_partly_used(now):
+    """Open But Unused's Partly Used rows (a rule or port forward opening more
+    ports than were used in 30 days, Keep Open ones left out), each as one
+    line for the Findings box; read with the 7-day tier, every 10 minutes."""
+    from access import open_unused_page
+    if now - assessment_traffic.get("ou_at", 0) >= ASSESSMENT_TRAFFIC_EVERY:
+        rows = (open_unused_page() or {}).get("ports") or []
+        assessment_traffic.update(ou_at=now, ou=[{"pid": x.get("pid"), "rule": x.get("rule"), "allowed": x.get("allowed"),
+                                                  "used": ", ".join(x.get("used") or []), "grants": x.get("grants")}
+                                                 for x in rows if x.get("state") == "Partly Used"])
+    return assessment_traffic.get("ou") or []
 
 
 def assessment_findings(st, clients, now):
@@ -309,13 +344,17 @@ def assessment_findings(st, clients, now):
     work between clients on one network, Allowed Devices / VqLAN / Isolation
     on shared non-Firewalla gear, overridden rules, Allow against Block,
     duplicates (also a rule that repeats a wider one), group to group, and
-    Allow rules nothing has used for 30 days.
+    Allow rules nothing has used for 30 days. Then, once a full week of
+    traffic is recorded, the 7-day tier (trafficcheck.py, D-1088): tries
+    blocked day after day.
     Each with facts (Clients, Why It Matters, What To Do), numbered steps
     and Decline (not offered again while it stays the same finding, as List
     Check's Decline, D-1063). Clients the owner placed one by one count as
     their own gear: two of them may not share it."""
-    from access import access_rule_text, access_sides
+    from access import access_local_rows, access_rule_text, access_sides
+    from policy import policy_state_load
     from rulecheck import rule_findings
+    from trafficcheck import TRAFFIC_DAYS, TRAFFIC_ORDER, traffic_covered, traffic_findings
     sets = {}
     for c in clients:
         if c["level"] in ("Partial", "Hidden") and c.get("mac"):
@@ -377,8 +416,19 @@ def assessment_findings(st, clients, now):
                 f"{r.get('pid')}:{','.join(hit)}")
     for f in rule_findings(rules, groups, sides, clients, now):
         add(f["id"], f["kind"], f["tone"], f["title"], f["facts"], f["steps"], f["sig"])
+    # The 7-day tier (trafficcheck.py, D-1088): only once a full week of traffic is recorded.
+    # A week of rows is read every 10 minutes, not at every look.
+    if now - assessment_traffic["at"] >= ASSESSMENT_TRAFFIC_EVERY:
+        rows = access_local_rows(TRAFFIC_DAYS * 24)
+        keep_blocked = {k for k, d in (policy_state_load().get("decisions") or {}).items() if d.get("intent") == "block"}
+        assessment_traffic.update(at=now, found=traffic_findings(rows, sides, keep_blocked, assessment_rules_say(rows, sides, groups), now),
+                                  days=min(traffic_covered(rows, now), TRAFFIC_DAYS))
+    found = assessment_traffic["found"]
+    st["traffic"] = {"ready": found is not None, "days": assessment_traffic["days"], "at": assessment_traffic["at"]}
+    for f in found or []:
+        add(f["id"], f["kind"], f["tone"], f["title"], f["facts"], f["steps"], f["sig"])
     kinds = ("gear_hidden", "gear_partial", "unenforceable", "contradiction", "overridden", "never_same_network",
-             "group_to_group", "never_partial", "duplicate", "unused")
+             "group_to_group", "never_partial", "duplicate", *TRAFFIC_ORDER, "unused")
     out.sort(key=lambda x: (x["declined"] is not None, kinds.index(x["kind"]), x["title"]))
     ids = {x["id"] for x in out}
     st["first_seen"] = {k: v for k, v in st.get("first_seen", {}).items() if k in ids}
@@ -416,7 +466,7 @@ def assessment_run(history=False):
         st = assessment_load()
         out = assessment_build(st)
         assessment_save(st)
-    assessment_publish({**out, "history": st["history"], "offer": assessment_offer_view(st["offer"], out["at"])})
+    assessment_publish({**out, "history": st["history"], "traffic": st.get("traffic"), "offer": assessment_offer_view(st["offer"], out["at"])})
     if history:
         h = {"history": dict(st["history"])}
         try:

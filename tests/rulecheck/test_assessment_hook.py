@@ -15,6 +15,11 @@ side = lambda mac, name, net, groups=(): {"mac": mac, "name": name, "ip": None, 
 SIDES = {s["mac"]: s for s in [side("A1", "PC One", "n1", ["g1"]), side("A2", "PC Two", "n1", ["g1"]), side("B1", "Cam", "n2")]}
 GROUPS = {"g1": {"id": "g1", "name": "G1 PCs", "members": ["A1", "A2"], "vqlan": True, "isolation": False}}
 access.access_sides = lambda: (SIDES, GROUPS)
+access.access_local_rows = lambda hours=24, mac=None: []   # no traffic: the 7-day tier waits (test_trafficcheck.py covers it)
+access.open_unused_page = lambda: {"ports": [{"pid": "955", "rule": "r", "allowed": "NAS → Cameras", "used": ["TCP 554"], "grants": "any port", "state": "Partly Used"},
+                                             {"pid": "9", "state": "Unused"}]}
+sys.modules["policy"] = stubs.Stub("policy")
+sys.modules["policy"].policy_state_load = lambda: {"decisions": {}}
 ob = lambda kind, oid: {"kind": kind, "id": oid, "name": str(oid), "label": f"{kind}: {oid}"}
 rule = lambda pid, action, on, match, **k: {"pid": str(pid), "action": action, "applies_on": ob(*on), "matching": ob(*match),
                                              "direction": "bidirection", "purpose": None, "seq": None, "disabled": False, **k}
@@ -53,4 +58,7 @@ expect("finding goes when its rule is deleted", "never_same_network" not in [x["
 expect("its first_seen is dropped", not any(k.startswith("rules|same") for k in st["first_seen"]))
 core.state["policy_rules"] = {"rules": []}
 expect("no rules: no findings", assessment.assessment_findings(st, CLIENTS, 5000) == [])
+ou = assessment.assessment_partly_used(6000)
+expect("Open But Unused: only Partly Used rows, one line each", [x["pid"] for x in ou] == ["955"] and ou[0]["used"] == "TCP 554")
+expect("7-day tier waits with no traffic", st.get("traffic", {}).get("ready") is False)
 print("ALL PASS" if ok else "SOME FAILED")

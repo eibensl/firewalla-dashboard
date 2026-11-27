@@ -779,7 +779,7 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
            "choices": choices,
            "clients": sorted(({"mac": m, "name": s["name"], "group": (groups.get(s["groups"][0]) or {}).get("name") if s["groups"] else None}
                               for m, s in sides.items() if m != x["mac"] and not access_is_gear(s) and QUARANTINE not in s["groups"]),
-                             key=lambda c: (str(c["group"] or "~"), str(c["name"]).lower()))}
+                             key=lambda c: (str(c["name"]).lower(), str(c["group"] or "~")))}   # A to Z by name (owner, 27 Nov 2026, D-1085)
     # A private Wi-Fi address isn't supported (owner, 23 Nov 2026, D-936): the
     # phone must have private addressing turned off, and then it rejoins under
     # its real address as a new entry in Quarantine, which is the one to onboard.

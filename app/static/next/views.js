@@ -3198,19 +3198,21 @@
             // List Check's own findings: one line each, done on Target Lists.
             const AS_KIND = { gear_partial: "NON-FIREWALLA GEAR", gear_hidden: "BEHIND ANOTHER ROUTER", unenforceable: "RULE CAN'T WORK",
                 never_same_network: "NEVER WORKS", never_partial: "SHARED GEAR", overridden: "OVERRIDDEN", contradiction: "ALLOW AGAINST BLOCK",
-                duplicate: "DUPLICATE", group_to_group: "NOT SUPPORTED", unused: "UNUSED" };
-            const finds = a.findings || [], fToDo = finds.filter(x => !x.declined), fNo = finds.filter(x => x.declined), lcs = a.list_check || [];
+                duplicate: "DUPLICATE", group_to_group: "NOT SUPPORTED", unused: "UNUSED", keeps_blocked: "KEEPS GETTING BLOCKED" };
+            const finds = a.findings || [], fToDo = finds.filter(x => !x.declined), fNo = finds.filter(x => x.declined), lcs = a.list_check || [], ous = a.open_unused || [];
             const findBox = x => `<article class="lc-item ${x.tone}"><div class="lc-head"><span class="pl-tag ${x.tone}">${AS_KIND[x.kind] || "FINDING"}</span> <b>${F.esc(x.title)}</b>
                     <span class="small muted lc-since">since ${F.dateTime(x.first_seen)}</span></div>
                 <dl class="lc-facts">${x.facts.map(([k, v]) => `<dt>${F.esc(k)}</dt><dd>${F.esc(v)}</dd>`).join("")}
                     <dt>Steps</dt><dd><ol class="lc-steps">${x.steps.map(st => `<li>${F.esc(st)}</li>`).join("")}</ol></dd></dl>
                 <div class="lc-acts">${btn("plain", "as-decline", "no|" + x.id, "Decline", "Don't offer this again: it leaves this list and Needs You, unless it becomes a different finding.")}</div></article>`;
             const findingsBox = `<section class="st-box" id="as-findings"><div class="st-head"><h2>Findings</h2>
-                    <span class="small muted">${F.count(fToDo.length)} to do${fNo.length ? ` · ${F.count(fNo.length)} declined` : ""} · from your settings and the router's count of rule hits · the 7-day traffic findings come later</span></div>
+                    <span class="small muted">${F.count(fToDo.length)} to do${fNo.length ? ` · ${F.count(fNo.length)} declined` : ""} · from your settings, the router's count of rule hits${a.traffic?.ready ? ` and ${F.count(a.traffic.days)} days of your traffic` : ` · the 7-day traffic findings wait for a full week (${F.count(a.traffic?.days || 0)} of 7 days recorded)`}</span></div>
                 ${fToDo.length ? `<div class="small muted">Each box is one job on its own. The numbered steps inside a box belong together: do them in order. A box goes by itself once it is put right.</div>
                     <h3>To Do <span class="small muted">· ${F.count(fToDo.length)}</span></h3>${fToDo.map(findBox).join("")}` : `<div class="small good">Nothing to do: every client is where Firewalla can enforce what it sets for it, and every rule can do what it says.</div>`}
                 ${lcs.length ? `<h3>From List Check <span class="small muted">· ${F.count(lcs.length)} · done on ${F.go("Target Lists", F.target("targetlists", { at: "tl-check" }))}</span></h3>
                     ${lcs.map(x => `<div class="small">${F.go(F.esc(x.list || "List"), F.target("targetlists", { at: "tl-check" }))} · ${F.esc(x.title || "")}</div>`).join("")}` : ""}
+                ${ous.length ? `<h3>From Open But Unused <span class="small muted">· ${F.count(ous.length)} · opened wider than used in 30 days · narrowed on ${F.go("Open But Unused", "openunused")}</span></h3>
+                    ${ous.map(x => `<div class="small">${x.pid ? `<a href="#" data-rule="${F.esc(x.pid)}">#${F.esc(x.pid)}</a> ` : ""}${F.esc(x.allowed || x.rule || "")} · opens ${F.esc(x.grants || "--")} · used ${F.esc(x.used || "--")}</div>`).join("")}` : ""}
                 ${fNo.length ? `<details class="lc-declined"><summary>Declined <span class="small muted">· ${F.count(fNo.length)} · not offered again</span></summary>
                     ${fNo.map(x => `<div class="lc-no"><span class="pl-tag muted">${AS_KIND[x.kind] || "FINDING"}</span> <b>${F.esc(x.title)}</b>
                         <span class="muted">· declined ${F.dateTime(x.declined)}</span> ${btn("plain", "as-decline", "offer|" + x.id, "Offer Again")}</div>`).join("")}</details>` : ""}</section>`;

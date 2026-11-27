@@ -3899,15 +3899,16 @@ def howto_mark_done():
             c["verify"] = verified[c.get("id")] = howto_verify(c["expect"])
         result = None
         if c.get("status") != "done" and (c.get("request") or {}).get("kind") in ("onboard", "offboard"):
-            # Client Onboarding / Offboarding: done when every step is seen.
+            # Client Onboarding / Offboarding: done when every step is seen
+            # (it then leaves Changes; it was never marked done before 27 Nov 2026, D-1086).
             result = bool(steps) and all(s_["seen"] for s_ in steps)
         elif c.get("status") != "done":
             plan = howto_plan(c["request"]["act"], c["request"]["a"], c["request"]["b"], c["request"].get("proto"), c["request"].get("port"),
                               c["request"].get("both"), c["request"].get("let"))
             result = all(d["done"] for d in plan["directions"]) if plan else False
-            if steps and all(s["seen"] for s in steps) and result:
-                c.update(status="done", done_at=time.time(), done=howto_done_facts(c))
-                done_now[c.get("id")] = c
+        if c.get("status") != "done" and steps and all(s["seen"] for s in steps) and result:
+            c.update(status="done", done_at=time.time(), done=howto_done_facts(c))
+            done_now[c.get("id")] = c
         out.append({**{k: c.get(k) for k in ("id", "title", "source", "started", "status", "done_at", "request", "undo", "item", "verify", "fixes", "back")},
                     "steps": steps, "result": result if c.get("status") != "done" else True,
                     "verify_words": howto_verify_words(c.get("verify"))})
