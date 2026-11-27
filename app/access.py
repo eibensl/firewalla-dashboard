@@ -2027,7 +2027,7 @@ def howto_group_number(groups):
     return f"{letter}{max(int(n) for n in mine) + 1:0{max(len(n) for n in mine)}d} "
 
 
-def howto_own_list_name(unit, dst_picked, dsts, taken=(), groups=None):
+def howto_own_list_name(unit, dst_picked, dsts, taken=(), groups=None, prefix=None):
     """The name of a new list of this unit's own: what it reaches, then whose
     it is, numbered like your other lists: "T11 NAS Recovery PC B". What
     it reaches is the group's name when the clients are a whole group (also
@@ -2040,7 +2040,8 @@ def howto_own_list_name(unit, dst_picked, dsts, taken=(), groups=None):
     whole = home if home and set(home.get("members") or []) == {d["mac"] for d in dsts} else None
     what = (howto_short_name(whole.get("name")) if whole else howto_short_name(dst_picked[0]["name"]) if len(dst_picked) == 1
             else howto_short_name(dsts[0]["name"]) if len(dsts) == 1 else f"{len(dsts)} clients")
-    base = name = howto_fit([what, howto_short_name(unit["name"])], joiner=" ", prefix=howto_list_number(taken))
+    # prefix: what goes in front, as Client Onboarding asked (D-1092); None = numbered like your lists.
+    base = name = howto_fit([what, howto_short_name(unit["name"])], joiner=" ", prefix=howto_list_number(taken) if prefix is None else prefix)
     used = {str(tl.get("name") or "").strip().lower() for tl in msp["lists"].values()} | {str(n).strip().lower() for n in taken}
     n = 2
     while name.strip().lower() in used:
@@ -2670,7 +2671,7 @@ def howto_reserve_step(x):
             "watch": {"kind": "reserved", "mac": x["mac"], "ip": x["ip"]}}
 
 
-def howto_fixes(act, units, srcs, dsts, dst_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused, lists_taken=()):
+def howto_fixes(act, units, srcs, dsts, dst_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused, lists_taken=(), list_prefix=None):
     """The ways to get every pair to the wanted verdict, each with its
     steps, what it changes in the model (to try it out) and what it would
     watch for."""
@@ -2726,7 +2727,7 @@ def howto_fixes(act, units, srcs, dsts, dst_picked, pairs, today, rules, groups,
             # One of your lists that no rule uses holds exactly these clients: it becomes this unit's.
             list_id, tl, how = spare
             spare = (None, None, None)
-            name = reused = tl.get("name") or howto_own_list_name(u, dst_picked, dsts, taken, groups)
+            name = reused = tl.get("name") or howto_own_list_name(u, dst_picked, dsts, taken, groups, list_prefix)
             if how == "edit":
                 old = [str(t).strip() for t in tl.get("targets") or [] if str(t).strip()]
                 steps.append({"title": f"Change your list \"{name}\" to {words}",
@@ -2737,7 +2738,7 @@ def howto_fixes(act, units, srcs, dsts, dst_picked, pairs, today, rules, groups,
                               "watch": {"kind": "list", "name": name, "lines": lines}})
         else:
             made += 1
-            name = howto_own_list_name(u, dst_picked, dsts, taken, groups)
+            name = howto_own_list_name(u, dst_picked, dsts, taken, groups, list_prefix)
             steps.append({"title": f"Create the target list \"{name}\"", "msp": {"path": ["Target Lists", "Create Target List"], "fields": [
                 ["List Name", name, name], ["Category", "Private", None],
                 ["Targets", f"{len(lines)} line{'s' if len(lines) != 1 else ''}", "\n".join([f"#Made by the dashboard's Show Me How, {datetime.now().strftime('%d %b %Y')}"] + shared_notes + lines)],
@@ -3596,8 +3597,9 @@ def howto_merged(fixes, words, sides, groups, idx):
 
 
 def howto_direction(act, a_refs, b_refs, port, suffix, words, sides, groups, rules, iso, paused, label, both=False, idx=0, let=frozenset(), model=False,
-                    lists_taken=()):
-    # lists_taken: names of the lists a plan of several parts has already given out
+                    lists_taken=(), list_prefix=None):
+    # lists_taken: names of the lists a plan of several parts has already given out;
+    # list_prefix: what goes before a new list's name (None = numbered like yours)
     # (Client Onboarding, From Scratch: one list per target, each with its own number).
     want = "allowed" if act == "allow" else "blocked"
     srcs, units, a_picked = howto_expand(a_refs, sides, groups)
@@ -3621,7 +3623,7 @@ def howto_direction(act, a_refs, b_refs, port, suffix, words, sides, groups, rul
     extra = sorted({m for u in units for m in u["members"]} - picked_srcs - {d["mac"] for d in dsts})
     fixes = []
     if need and units and dsts:
-        fixes = howto_fixes(act, units, srcs, dsts, b_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused, lists_taken)
+        fixes = howto_fixes(act, units, srcs, dsts, b_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused, lists_taken, list_prefix)
         before_cache, today_cache = {}, {}
         for f in fixes:
             howto_keep(f, idx, let, rules, groups, pairs, probes, iso, want, sides, paused, both, before_cache, suffix, words, today_cache)

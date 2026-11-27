@@ -2205,7 +2205,13 @@ details.tf-group > summary::-webkit-details-marker { display: none; }
 .hw-pick { background: var(--inset); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; max-height: 360px; overflow: auto; }
 .hw-pick h3 { margin: 0 0 4px; }
 .hw-chk { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
-.ob-how { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 2px 0 10px 24px; }
+.ob-how { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 12px 24px; }
+/* From Scratch questions, numbered, the next one marked (D-1093) */
+.ob-q { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 10px; border-left: 3px solid transparent; border-radius: 4px; }
+.ob-q.ob-next, .ob-net.ob-next { border-left: 3px solid var(--warn); background: var(--warn-bg); padding: 6px 10px; border-radius: 4px; }
+.ob-qn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid currentColor; font-size: 12px; font-weight: 700; flex: none; }
+.ob-still { color: var(--warn); font-weight: 600; font-size: var(--fs-small); padding-left: 13px; }
+.ob-still-box { color: var(--warn); border: 1px solid var(--warn-line); background: var(--warn-bg); border-radius: 6px; padding: 8px 12px; margin: 6px 0 10px; display: flex; flex-direction: column; gap: 3px; }
 .ob-how .hw-seg button { padding: 3px 10px; }
 .ob-others { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
 .ob-net { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0; font-size: 16px; }

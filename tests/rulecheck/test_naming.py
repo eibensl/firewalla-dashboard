@@ -31,5 +31,16 @@ check("long name fits in 32", len(access.howto_fit([access.howto_short_name("A V
 access.msp["lists"] = {str(i): {"name": n} for i, n in enumerate(["T01 Cameras", "T08 NAS PC 1", "T11 NAS Recovery PC 2", "dap_x"])}
 check("next T number", access.howto_list_number(), "T12 ")
 check("T number counts lists this plan already named", access.howto_list_number(["T12 Printer"]), "T13 ")
+import onboarding  # noqa: E402
+check("ask: not answered", onboarding.ob_pre(""), (None, "", ""))
+check("ask: numbered like yours", onboarding.ob_pre("num"), ("num", "", ""))
+check("ask: nothing", onboarding.ob_pre("none"), ("none", "", ""))
+check("ask: My Own, nothing typed yet", onboarding.ob_pre("c~~"), (None, "", ""))
+check("ask: My Own", onboarding.ob_pre("c~IoT~TL"), ("own", "IoT", "TL"))
+check("ask: My Own drops other characters, 8 at most", onboarding.ob_pre("c~I o<T~ABCDEFGHIJ"), ("own", "IoT", "ABCDEFGH"))
+check("list prefix given: used as is", access.howto_own_list_name({"name": "IoT Printer .7"}, [{"name": "NAS 1"}], [{"name": "NAS 1", "mac": "M"}], prefix="TL "),
+      "TL NAS 1 IoT Printer")
+check("list prefix None: numbered", access.howto_own_list_name({"name": "G30 Printer .7"}, [{"name": "NAS 1"}], [{"name": "NAS 1", "mac": "M"}]),
+      "T12 NAS 1 Printer")
 print("\n".join(fails) or f"all {checks} pass")
 sys.exit(1 if fails else 0)

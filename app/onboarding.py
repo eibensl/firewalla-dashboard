@@ -32,7 +32,7 @@ from router import access_device_protect, feature_settings, internet_interface_n
 from access import (
     HOWTO_GROUP_SWITCHES, HOWTO_STEP_KEYS, HOWTO_UNTRIED_INTERNET, access_allowed_owner, access_is_gear, access_isolated, access_local_rules, access_paused, access_rule_text,
     access_list_entries, access_local_rows, access_sides, access_target_list_side, check_local_access, howto_addresses, howto_app, howto_direction, howto_expect, howto_fit,
-    howto_group_number, howto_short_name,
+    howto_group_number, howto_list_number, howto_short_name,
     howto_port,
     howto_id, howto_left_behind, howto_load, howto_lock, howto_mark_done, howto_matching, howto_reserve_step, howto_reserved, howto_save, howto_trial,
 )
@@ -762,7 +762,23 @@ def ob_not_covered(scope, groups, sides):
     return sorted(({"what": k, "where": where_words(v)} for k, v in out.items()), key=lambda i: i["what"].lower())
 
 
-def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, want=None, wport=None, pmac=None, feat=None, net=None, how=None):
+def ob_pre(text):
+    """What goes before a new group's and its lists' names (D-1092): "num" =
+    numbered like yours (G30 ..., T12 ...), "none" = just the name, or
+    "c~<group>~<list>" = characters you typed (letters, digits, - and _, up
+    to 8 each). -> (kind or None while not answered, group text, list text)."""
+    text = str(text or "").strip()
+    if text in ("num", "none"):
+        return text, "", ""
+    if text.startswith("c~"):
+        clean = lambda v: re.sub(r"[^A-Za-z0-9_-]", "", v)[:8]
+        _, g, t = (text.split("~") + ["", ""])[:3]
+        g, t = clean(g), clean(t)
+        return ("own", g, t) if g or t else (None, "", "")   # My Own with nothing typed yet: still to answer
+    return None, "", ""
+
+
+def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, want=None, wport=None, pmac=None, feat=None, net=None, how=None, pre=None):
     """Everything the page shows for one client once you say how it gets its
     access (mode "mirror" with like = a client, or "scratch" with to / frm =
     refs, net = "yes" / "no" for the internet and how = each target's purpose
@@ -849,9 +865,15 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
         octets = str(x.get("ip") or "").split(".")
         net_end = f" .{octets[2]}" if len(octets) == 4 and octets[2].isdigit() else ""
         base = howto_short_name(name) + net_end
-        gname = howto_fit([base], prefix=howto_group_number(groups))
+        # What goes before the new names is asked (owner, 27 Nov 2026, D-1092):
+        # numbered like yours, nothing, or characters you type.
+        kind, g_pre, t_pre = ob_pre(pre)
+        out["pre"], out["pre_offer"] = {"kind": kind, "group": g_pre, "list": t_pre}, {"group": howto_group_number(groups).strip(), "list": howto_list_number().strip()}
+        group_prefix = howto_group_number(groups) if kind in ("num", None) else (g_pre + " " if g_pre else "")
+        list_prefix = None if kind in ("num", None) else (t_pre + " " if t_pre else "")
+        gname = howto_fit([base], prefix=group_prefix)
         if any(str(g.get("name") or "").lower() == gname.lower() for g in groups.values()):
-            gname = howto_fit([base], tail="2", prefix=howto_group_number(groups))
+            gname = howto_fit([base], tail="2", prefix=group_prefix)
         out["group_name"] = gname
         new = {"id": OB_NEW, "name": gname, "members": [x["mac"]], "vqlan": True, "isolation": False}
         steps.append({"title": f"Make a group \"{gname}\" with only {howto_id(shown)}",
@@ -904,7 +926,7 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
         for p in picks:
             if p["mode"] == "copy" and p["side"] == "to":
                 p["others"] = ob_others(p["ref"], x["mac"], sides, groups)
-        waiting = (["Whether it needs the internet"] if not net else []) + [
+        waiting = (["Whether it needs the internet"] if not net else []) + (["What goes before the new group's and lists' names"] if not kind else []) + [
             f"{'It reaches' if p['side'] == 'to' else 'Reaching it:'} {p['name']}: {p['missing']}" for p in picks if not p["ok"]]
         if waiting:
             out["waiting"], out["steps"], out["problems"] = waiting, [], []
@@ -921,7 +943,8 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
                     + f" · {p['why']} · {'Learning Mode: every port, to narrow later' if p['mode'] == 'learn' else words}")
             # The lists the targets before this one are getting: this one's list takes the next number.
             made = [st["watch"]["name"] for st in steps if (st.get("watch") or {}).get("kind") == "list"]
-            d = howto_direction("allow", a_refs, b_refs, check, suffix, words, t_sides, t_groups, rules, iso, paused, what, model=True, lists_taken=made)
+            d = howto_direction("allow", a_refs, b_refs, check, suffix, words, t_sides, t_groups, rules, iso, paused, what, model=True, lists_taken=made,
+                                list_prefix=list_prefix)
             if d["done"]:
                 continue
             ways = [f for f in d["fixes"] if f["id"] not in ("pair", "own-group") and f["result"]["ok"] == f["result"]["of"]]
@@ -1071,7 +1094,8 @@ def ob_mirror(x, shown, m_side, sides, groups, steps):
 
 @app.get("/api/onboarding-page")
 def api_onboarding_page(mac: str = None, mode: str = None, like: str = None, to: str = None, frm: str = None, name: str = None,
-                        conn: str = None, want: str = None, wport: str = None, pmac: str = None, feat: str = None, net: str = None, how: str = None):
+                        conn: str = None, want: str = None, wport: str = None, pmac: str = None, feat: str = None, net: str = None, how: str = None,
+                        pre: str = None):
     """The Client Onboarding page: Quarantine's check, the clients in it (and
     clients in no group at all), the plan for one, and onboarding changes."""
     sides, groups = access_sides()
@@ -1089,7 +1113,7 @@ def api_onboarding_page(mac: str = None, mode: str = None, like: str = None, to:
                      "twin": twin(s)}
     quarantined = [row(sides[m]) for m in (groups.get(QUARANTINE) or {}).get("members") or [] if m in sides]
     loose = [row(s) for s in sides.values() if not s["groups"] and not access_is_gear(s) and s.get("online")]
-    plan = ob_plan(mac, mode, like, to, frm, name, conn, want, wport, pmac, feat, net, how) if mac else None
+    plan = ob_plan(mac, mode, like, to, frm, name, conn, want, wport, pmac, feat, net, how, pre) if mac else None
     if plan:
         plan.pop("_fix", None)
     # Onboarding and offboarding changes in progress, as the Changes list shows them (steps seen, saved steps).
@@ -1108,8 +1132,9 @@ def api_onboarding_start(payload: dict = Body(default={})):
     text = lambda k, n: fields.text(k, n, strip=False)
     req = {"mac": text("mac", 40).upper(), "mode": text("mode", 10), "like": text("like", 40).upper(), "to": text("to", 4000), "frm": text("frm", 4000), "name": text("name", 60),
            "pmac": "1" if payload.get("pmac") in ("1", 1, True) else "", "feat": text("feat", 200),
-           "net": text("net", 3), "how": text("how", 8000)}
-    plan = ob_plan(req["mac"], req["mode"], req["like"], req["to"], req["frm"], req["name"], "ok", None, None, req["pmac"], req["feat"], req["net"], req["how"])
+           "net": text("net", 3), "how": text("how", 8000), "pre": text("pre", 40)}
+    plan = ob_plan(req["mac"], req["mode"], req["like"], req["to"], req["frm"], req["name"], "ok", None, None, req["pmac"], req["feat"], req["net"], req["how"],
+                   req["pre"])
     if plan and ob_private(plan["mac"]):
         return {"ok": False, "error": "Private Wi-Fi addresses are not supported: turn private addressing off on the device, then onboard the new entry it makes in Quarantine."}
     if plan and plan.get("waiting"):

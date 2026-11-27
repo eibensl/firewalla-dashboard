@@ -3290,7 +3290,7 @@
         noFilterBar: true,
         source() {
             const f = onbFilter();
-            const q = ["mac", "mode", "like", "to", "frm", "name", "conn", "want", "wport", "pmac", "feat", "net", "how"].filter(k => f[k]).map(k => `${k}=${encodeURIComponent(f[k])}`).join("&");
+            const q = ["mac", "mode", "like", "to", "frm", "name", "conn", "want", "wport", "pmac", "feat", "net", "how", "pre"].filter(k => f[k]).map(k => `${k}=${encodeURIComponent(f[k])}`).join("&");
             return "/api/onboarding-page" + (q ? "?" + q : "");
         },
         every: 30,
@@ -3315,6 +3315,15 @@
             // From Scratch (D-1064): the internet Yes / No, and each ticked target's purpose and ports
             // (value = "<side>~<ref>~<field>|<answer>").
             if (action === "ob-net") { onbGo({ ...f, net: value }); return null; }
+            // What goes before the new names (D-1092): "num", "none", or "c~<group>~<lists>" (My Own, typed in two boxes).
+            if (action === "ob-pre") {
+                const [k, typed] = String(value).split(/\|(.*)/s);
+                const cur = String(f.pre || "");
+                const [, g0 = "", t0 = ""] = cur.startsWith("c~") ? cur.split("~") : [];
+                const pre = k === "g" ? `c~${typed || ""}~${t0}` : k === "t" ? `c~${g0}~${typed || ""}` : k === "own" ? `c~${g0}~${t0}` : k;
+                onbGo({ ...f, pre });
+                return null;
+            }
             if (action === "ob-learn-done") return post("/api/onboarding/learning-done", { id: value });
             if (action === "ob-how") {
                 const [key, answer] = String(value).split(/\|(.*)/s);
@@ -3331,7 +3340,7 @@
             if (action === "ob-start") {
                 const p = onbPage?.plan;
                 if (!p?.steps?.length) { say("Say how it gets its access first."); return null; }
-                const r = await post("/api/onboarding/start", { mac: p.mac, mode: p.mode, like: f.like || "", to: f.to || "", frm: f.frm || "", name: p.name, pmac: f.pmac || "", feat: f.feat || "", net: f.net || "", how: f.how || "" });
+                const r = await post("/api/onboarding/start", { mac: p.mac, mode: p.mode, like: f.like || "", to: f.to || "", frm: f.frm || "", name: p.name, pmac: f.pmac || "", feat: f.feat || "", net: f.net || "", how: f.how || "", pre: f.pre || "" });
                 if (!r.ok) say(r.error || "Couldn't add it.");
                 return r;
             }
@@ -3410,32 +3419,51 @@
                     // Yes or No, then for each target ticked what the access is for and its ports
                     // (typed, or Learning Mode). The steps come once everything is answered.
                     const seg = (on, key, label, tip) => `<button type="button" class="${on ? "on-g" : ""}" data-view-action="ob-how" data-value="${F.esc(key)}"${tip ? ` data-tip="${F.esc(tip)}"` : ""}>${label}</button>`;
+                    // Each ticked target's questions, numbered, with the one to answer next marked (owner, 27 Nov 2026,
+                    // D-1093: "The questions that need to be answered need to be obvious").
+                    const nextTag = `<span class="pl-tag warn">Answer This Next</span>`;
+                    const q = (n, on, title, body) => `<div class="ob-q${on ? " ob-next" : ""}"><span class="ob-qn">${n}</span><b>${title}</b>${on ? nextTag : ""}${body}</div>`;
                     const detail = (side, ch) => {
                         const x = (p.picks || []).find(k => k.side === side && k.ref === ch.ref);
                         if (!x) return "";
                         const key = `${side}~${ch.ref}~`;
+                        const next = !x.purpose || (x.purpose === "other" && !x.other) ? 1 : !x.mode ? 2 : x.missing ? 3 : 0;
+                        const modeTip = { ports: "Only the ports you type are opened.", learn: "Every port is opened to this one target only, so the traffic can be watched; after 7 days this page lists the ports it used, to narrow to.",
+                            copy: "Shows who already reaches this target and on which ports (your rules and the last 7 days of traffic): press Use These on one." }[x.mode] || "";
                         return `<div class="ob-how">
-                            <label class="small">What for? <select data-view-action="ob-how" data-value="${F.esc(key)}purpose"><option value="">Pick…</option>${p.purposes.map(([id, n]) => `<option value="${id}"${x.purpose === id ? " selected" : ""}>${F.esc(n)}</option>`).join("")}</select></label>
-                            ${x.purpose === "other" ? `<input type="text" data-view-action="ob-how" data-value="${F.esc(key)}other" value="${F.esc(x.other)}" placeholder="what it is for" maxlength="40" aria-label="What it is for">` : ""}
-                            <span class="hw-seg">${seg(x.mode === "ports", key + "mode|ports", "I Know The Ports", "You type the ports; only those are opened.")}${seg(x.mode === "learn", key + "mode|learn", "Learning Mode",
-                                "Every port is opened to this one target only, so the traffic can be watched. It is listed under Learning Mode on this page, to narrow later with Show Me How.")}${side === "to" ? seg(x.mode === "copy", key + "mode|copy", "Use What Others Use",
-                                "Lists who already reaches this target and on which ports (from your rules and the last 7 days of traffic), to copy.") : ""}</span>
-                            ${x.mode === "copy" ? `<div class="ob-others">${(x.others || []).length ? x.others.map(o => `<div class="small"><b>${F.esc(o.who)}</b> · ${F.esc(o.words)} <span class="muted">· ${F.esc(o.note)}</span>
-                                ${o.usable ? btn("plain", "ob-how", `${key}use|${o.protocol}|${o.ports}`, "Use These") : `<span class="muted">· nothing to copy: no ports named</span>`}</div>`).join("")
-                                : `<div class="small muted">Nobody reaches it yet: type the ports, or use Learning Mode.</div>`}</div>` : ""}
-                            ${x.mode === "ports" ? `<select data-view-action="ob-how" data-value="${F.esc(key)}proto" aria-label="Protocol"><option value="tcp"${x.proto === "tcp" ? " selected" : ""}>TCP</option><option value="udp"${x.proto === "udp" ? " selected" : ""}>UDP</option></select>
-                                <input type="text" data-view-action="ob-how" data-value="${F.esc(key)}ports" value="${F.esc(x.ports)}" placeholder="445 or 80,443 or 8000-8100" maxlength="120" aria-label="Ports">` : ""}
-                            ${x.missing ? `<span class="small warn">Still needed: ${F.esc(x.missing)}</span>` : `<span class="small good">✓</span>`}</div>`;
+                            ${q(1, next === 1, `What does ${F.esc(p.name)} need ${side === "to" ? "it" : "to be reached"} for?`,
+                                `<select data-view-action="ob-how" data-value="${F.esc(key)}purpose" aria-label="What it is for"><option value="">Pick…</option>${p.purposes.map(([id, n]) => `<option value="${id}"${x.purpose === id ? " selected" : ""}>${F.esc(n)}</option>`).join("")}</select>
+                                ${x.purpose === "other" ? `<input type="text" data-view-action="ob-how" data-value="${F.esc(key)}other" value="${F.esc(x.other)}" placeholder="what it is for" maxlength="40" aria-label="What it is for">` : ""}`)}
+                            ${q(2, next === 2, "How should its ports be opened?",
+                                `<span class="hw-seg">${seg(x.mode === "ports", key + "mode|ports", "I Know The Ports", "You type the ports; only those are opened.")}${seg(x.mode === "learn", key + "mode|learn", "Learning Mode",
+                                    "Every port is opened to this one target only, so the traffic can be watched. It is listed under Learning Mode on this page, to narrow later with Show Me How.")}${side === "to" ? seg(x.mode === "copy", key + "mode|copy", "Use What Others Use",
+                                    "Lists who already reaches this target and on which ports (from your rules and the last 7 days of traffic), to copy.") : ""}</span>
+                                ${modeTip ? `<span class="small muted">${F.esc(modeTip)}</span>` : ""}`)}
+                            ${x.mode === "ports" ? q(3, next === 3, "Which protocol and ports?",
+                                `<select data-view-action="ob-how" data-value="${F.esc(key)}proto" aria-label="Protocol"><option value="tcp"${x.proto === "tcp" ? " selected" : ""}>TCP</option><option value="udp"${x.proto === "udp" ? " selected" : ""}>UDP</option></select>
+                                <input type="text" data-view-action="ob-how" data-value="${F.esc(key)}ports" value="${F.esc(x.ports)}" placeholder="445 or 80,443 or 8000-8100" maxlength="120" aria-label="Ports">
+                                <span class="small muted">Type them, then click outside the box.</span>`) : ""}
+                            ${x.mode === "copy" ? q(3, next === 3, "Which ports should it copy?",
+                                `<div class="ob-others">${(x.others || []).length ? x.others.map(o => `<div class="small"><b>${F.esc(o.who)}</b> · ${F.esc(o.words)} <span class="muted">· ${F.esc(o.note)}</span>
+                                    ${o.usable ? btn("plain", "ob-how", `${key}use|${o.protocol}|${o.ports}`, "Use These") : `<span class="muted">· nothing to copy: no ports named</span>`}</div>`).join("")
+                                    : `<div class="small muted">Nobody reaches it yet: choose I Know The Ports or Learning Mode above instead.</div>`}</div>`) : ""}
+                            ${x.missing ? `<div class="ob-still">Still to answer for ${F.esc(ch.name)}: ${F.esc(x.missing)}</div>` : `<div class="small good">✓ All answered for ${F.esc(ch.name)}</div>`}</div>`;
                     };
                     const picker = (side, title) => `<div class="hw-pick"><h3>${title}</h3><div class="small muted">Groups, and clients in no group. For each one you tick: what it is for, then its ports or Learning Mode.</div>
                         ${p.choices.map(ch => `<label class="small hw-chk"><input type="checkbox" data-view-action="ob-toggle" data-value="${side}|${F.esc(ch.ref)}"${onbRefs(f[side]).includes(ch.ref) ? " checked" : ""}>
                             ${ch.kind === "group" ? `<b>${F.esc(ch.name)}</b> <span class="muted">(group, ${ch.count})</span>` : `${F.esc(ch.name)} <span class="muted">(no group)</span>`}</label>${detail(side, ch)}`).join("")}</div>`;
-                    const netAsk = `<div class="ob-net"><b>Does ${F.esc(p.name)} need the internet?</b>
+                    const netAsk = `<div class="ob-net${p.net ? "" : " ob-next"}"><b>Does ${F.esc(p.name)} need the internet?</b>${p.net ? "" : nextTag}
                         <span class="hw-seg"><button type="button" class="${p.net === "yes" ? "on-g" : ""}" data-view-action="ob-net" data-value="yes">Yes</button><button type="button" class="${p.net === "no" ? "on-r" : ""}" data-view-action="ob-net" data-value="no">No</button></span>
                         <span class="small muted">${p.net === "no" ? "A Block Internet rule goes on its group." : p.net === "yes" ? "It gets the internet, with your network-wide protections." : "Not answered yet."}</span></div>`;
-                    ask = `${netAsk}<div class="hw-columns">${picker("to", `What should ${F.esc(p.name)} be able to reach?`)}${picker("frm", `What should be able to reach ${F.esc(p.name)}?`)}</div>
+                    // What goes before the new names (owner, 27 Nov 2026, D-1092): numbered like yours, nothing, or your own.
+                    const po = p.pre_offer || {}, pk = (p.pre || {}).kind, own = String(f.pre || "").startsWith("c~");
+                    const [, ownG = "", ownT = ""] = own ? String(f.pre).split("~") : [];
+                    const preAsk = `<div class="ob-net${pk ? "" : " ob-next"}"><b>Put characters before the names of its new group and target lists?</b>${pk ? "" : nextTag}
+                        <span class="hw-seg">${po.group || po.list ? `<button type="button" class="${pk === "num" ? "on-g" : ""}" data-view-action="ob-pre" data-value="num">Number Them Like Yours (${F.esc([po.group, po.list].filter(Boolean).join(", "))})</button>` : ""}<button type="button" class="${pk === "none" ? "on-g" : ""}" data-view-action="ob-pre" data-value="none">Nothing</button><button type="button" class="${own ? "on-g" : ""}" data-view-action="ob-pre" data-value="own">My Own</button></span>
+                        ${own ? `<span class="small">Group <input type="text" data-view-action="ob-pre" data-value="g" value="${F.esc(ownG)}" placeholder="e.g. IoT" maxlength="8" aria-label="Characters before the group's name"> Lists <input type="text" data-view-action="ob-pre" data-value="t" value="${F.esc(ownT)}" placeholder="e.g. TL" maxlength="8" aria-label="Characters before the lists' names"></span>` : ""}
+                        <span class="small muted">${pk ? `The new group: <b>${F.esc(p.group_name || "")}</b>.` : own ? "Type the characters, then click outside the box." : "Not answered yet."}</span></div>`;
+                    ask = `${(p.waiting || []).length ? `<div class="ob-still-box"><b>Still to answer (${F.count(p.waiting.length)}) before the steps can be worked out:</b>${p.waiting.map(t => `<div>• ${F.esc(t)}</div>`).join("")}</div>` : ""}${netAsk}${preAsk}<div class="hw-columns">${picker("to", `What should ${F.esc(p.name)} be able to reach?`)}${picker("frm", `What should be able to reach ${F.esc(p.name)}?`)}</div>
                         <div class="small muted">Nothing ticked on a side: nothing, that way.</div>
-                        ${(p.waiting || []).length ? `<div class="hw-warn"><b>Before the steps can be worked out, still to answer:</b>${p.waiting.map(t => `<div>• ${F.esc(t)}</div>`).join("")}</div>` : ""}
                         ${(p.features || []).length ? `<div class="hw-pick" style="margin-top:12px"><h3>Firewalla Features</h3>
                             <div class="small muted">Features you turned on for some groups or clients don't reach a new group of its own by themselves. Tick the ones it should have; box-wide ones already apply.</div>
                             ${p.features.map(ft => ft.box ? `<div class="small hw-chk"><span class="good">✓</span> <b>${F.esc(ft.name)}</b> <span class="muted">· on for all clients: already applies</span></div>`
