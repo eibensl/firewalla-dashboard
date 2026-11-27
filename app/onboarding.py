@@ -907,9 +907,22 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
         out["features"] = feats
         picked = [f for f in feats if f["key"] in set(str(feat or "").split(",")) and not f["box"]]
         out["feat"] = [f["key"] for f in picked]
-        # DNS over HTTPS isn't on a group's page on the MSP: it is Services ›
-        # DNS over HTTPS › Apply To (owner, 27 Nov 2026, D-1094); in the app it is.
-        switches = [f for f in picked if f["kind"] == "group" and f["key"] != "doh"]
+        # On the MSP these features aren't on a group's page: each has its own
+        # page with an Apply To list (Services › DNS over HTTPS, Ad Block, Controls
+        # › ...; owner's screenshots 27 Nov 2026, D-1094), so each gets a step
+        # there. In the app each is a switch on the group's page.
+        apply_to = {key: path for key, _label, path, _app in OB_DEVICE_SWITCHES}
+        for f in [f for f in picked if f["kind"] == "group" and f["key"] in apply_to]:
+            menu = " › ".join(apply_to[f["key"]][:-2])
+            steps.append({"title": f"Turn on {f['name']} for \"{gname}\"",
+                          "msp": {"path": apply_to[f["key"]], "fields": [["Apply To", f"add the group {gname}", gname]]},
+                          "app": howto_app("toggles", unit=gname, unit_kind="group", toggles=[[f["name"], True]]),
+                          "note": f"Then Save. On the MSP it is not on the group's page: it is under {menu}, where Apply To lists what it is on "
+                                  f"(on for {f['on']} of your {f['of']} groups). In the app it is a switch on the group's page."
+                                  + (" A client uses one DNS service at a time: DNS over HTTPS or Unbound." if f["key"] == "doh" else ""),
+                          "undo": f"Take {gname} out of {f['name']}'s Apply To again.", "untried": HOWTO_UNTRIED_INTERNET,
+                          "watch": {"kind": "own_group_setting", "mac": x["mac"], "keys": [f["key"]]}})
+        switches = [f for f in picked if f["kind"] == "group" and f["key"] not in apply_to]
         if switches:
             words = ", ".join(f["name"] for f in switches)
             steps.append({"title": f"Turn on {words} for \"{gname}\"",
@@ -918,16 +931,6 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
                           "note": "On the group's own page. " + "; ".join(f"{f['name']} is on for {f['on']} of your {f['of']} groups" for f in switches) + ".",
                           "undo": "Turn them off again.", "untried": HOWTO_UNTRIED_INTERNET,
                           "watch": {"kind": "own_group_setting", "mac": x["mac"], "keys": [f["key"] for f in switches]}})
-        doh = next((f for f in picked if f["kind"] == "group" and f["key"] == "doh"), None)
-        if doh:
-            steps.append({"title": f"Turn on DNS over HTTPS for \"{gname}\"",
-                          "msp": {"path": ["Services", "DNS over HTTPS", "Apply To", "Edit"], "fields": [["Apply To", f"add the group {gname}", gname]]},
-                          "app": howto_app("toggles", unit=gname, unit_kind="group", toggles=[["DNS over HTTPS", True]]),
-                          "note": f"Then Save. On the MSP it is not on the group's page: it is under Services › DNS over HTTPS, where Apply To lists the groups it is on "
-                                  f"(on for {doh['on']} of your {doh['of']} groups). In the app it is a switch on the group's page. "
-                                  "A client uses one DNS service at a time: DNS over HTTPS or Unbound.",
-                          "undo": f"Take {gname} out of DNS over HTTPS's Apply To again.", "untried": HOWTO_UNTRIED_INTERNET,
-                          "watch": {"kind": "own_group_setting", "mac": x["mac"], "keys": ["doh"]}})
         out["dap"] = ob_dap(x, name, sides, None)[0]
         out["changes"] = ob_changes(x, name, None, None)
         # Each ticked target: what for, and its ports or Learning Mode. Nothing is worked out before all is said.
