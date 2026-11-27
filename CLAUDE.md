@@ -73,6 +73,11 @@ app/                  the dashboard (FastAPI)
   connections.py      Allowed Connections and Planned Changes
   listcheck.py        List Check on target lists
   onboarding.py       Client Onboarding / Offboarding
+  assessment.py       Network Assessment: enforcement levels, questions,
+                      findings, the pop-up and its email
+  rulecheck.py        rules analysis for the assessment (rules that
+                      can't do what they say)
+  trafficcheck.py     the 7-day traffic findings (Keeps Getting Blocked)
   traffic.py          Outbound, Internet, MSP, Alarms, Destinations, Traffic
   assistant.py        Claude: Questions page, hourly answers, digest, email
   setup.py            guided first-run setup (/setup)
@@ -88,6 +93,8 @@ claude-worker/        separate container that talks to the Anthropic API
   worker.py           takes questions from the dashboard, sends the facts
                       as text to Claude, posts answers back (no tools)
 router/               files that go onto the router during setup
+tests/                offline checks, run on the PC with Python (no
+                      server needed): python -I tests/<folder>/test_*.py app
 docs/                 the manual (PDFs)
 ```
 
