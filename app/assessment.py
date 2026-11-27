@@ -305,23 +305,27 @@ def assessment_findings(st, clients, now):
       gear_hidden   clients behind another router: no rule per client.
       unenforceable a rule of yours that names a client behind another
                     router: Firewalla can't tell that client's traffic apart.
-    (A rule between two clients on the same network never works, Firewalla
-    gear or not, so it is not a finding about the gear: the rules assessment
-    will deal with it.)
+    Then the rules analysis (rulecheck.py, 26 Nov 2026): rules that never
+    work between clients on one network, Allowed Devices / VqLAN / Isolation
+    on shared non-Firewalla gear, overridden rules, Allow against Block,
+    duplicates (also a rule that repeats a wider one), group to group, and
+    Allow rules nothing has used for 30 days.
     Each with facts (Clients, Why It Matters, What To Do), numbered steps
     and Decline (not offered again while it stays the same finding, as List
     Check's Decline, D-1063). Clients the owner placed one by one count as
     their own gear: two of them may not share it."""
     from access import access_rule_text, access_sides
+    from rulecheck import rule_findings
     sets = {}
     for c in clients:
         if c["level"] in ("Partial", "Hidden") and c.get("mac"):
             key = (c["level"], c.get("ask") or c["mac"])
             sets.setdefault(key, []).append(c)
-    sides, _ = access_sides() if sets else ({}, {})
+    sides, groups = access_sides()
     # Behind another router every rule that names the client fails, internet
     # ones (Device Active Protect, a list On it) too: Firewalla can't tell it apart.
-    every = [r for r in (state.get("policy_rules") or {}).get("rules") or [] if r.get("disabled") is not True] if sets else []
+    rules = (state.get("policy_rules") or {}).get("rules") or []
+    every = [r for r in rules if r.get("disabled") is not True]
     rule_names_client = lambda r, m: any(str(o.get("kind")) == "device" and str(o.get("id") or "").upper() == m
                              for s in ("applies_on", "matching") for o in ((r.get(s) or {}), (r.get(s) or {}).get("object") or {}))
     out = []
@@ -371,7 +375,11 @@ def assessment_findings(st, clients, now):
                  ["What To Do", "Fix the gear first (the box above); until then this rule does nothing for these clients."]],
                 ["Do the steps in the box about this gear above", "Then check this page again: this goes once the clients are Full"],
                 f"{r.get('pid')}:{','.join(hit)}")
-    out.sort(key=lambda x: (x["declined"] is not None, {"gear_hidden": 0, "gear_partial": 1, "unenforceable": 2}[x["kind"]], x["title"]))
+    for f in rule_findings(rules, groups, sides, clients, now):
+        add(f["id"], f["kind"], f["tone"], f["title"], f["facts"], f["steps"], f["sig"])
+    kinds = ("gear_hidden", "gear_partial", "unenforceable", "contradiction", "overridden", "never_same_network",
+             "group_to_group", "never_partial", "duplicate", "unused")
+    out.sort(key=lambda x: (x["declined"] is not None, kinds.index(x["kind"]), x["title"]))
     ids = {x["id"] for x in out}
     st["first_seen"] = {k: v for k, v in st.get("first_seen", {}).items() if k in ids}
     return out

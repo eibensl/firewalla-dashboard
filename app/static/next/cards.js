@@ -2865,5 +2865,74 @@
         { id: "s-claude", label: "Claude", icon: "sparkles", pages: ["questions", "knowledge"] }
     ];
 
-    window.DashboardCards = { types, register, pages, menuSections, F, D, filterLabel };
+    // The guided tour's stops (D-1078), next to the menu they walk along so a
+    // renamed or moved heading keeps its stop. targets = the menu parts lit
+    // up; a stop whose part isn't in the menu is left out (Easy Mode, no
+    // Claude). easy = its lines while Easy Mode is on (only its pages named).
+    const tourStops = [
+        { title: "Welcome", lines: ["This dashboard watches your Firewalla and shows what is happening on your network.",
+            "It only reads: it never changes the router. Changes are yours to make, with step-by-step help.", "The tour takes about a minute."] },
+        { title: "Status", targets: ['#nav [data-page="status"]'], lines: ["Is anything down? The banner at the top answers that.",
+            "Needs You is the one list of everything waiting for you."] },
+        { title: "Internet & Equipment", targets: ['#nav [data-section="s-equipment"]'], lines: ["Your internet connections and how they are doing.",
+            "Topology shows your equipment and how it is wired."], },
+        { title: "Clients", targets: ['#nav [data-section="s-devices"]'], lines: ["Every client on your network, and your groups.",
+            "New clients start in Quarantine and wait in Client Onboarding until you say what they may reach."] },
+        { title: "Rules & Access", targets: ['#nav [data-section="s-local"]'], lines: ["Network Assessment comes first: where each client connects and what Firewalla can enforce there.",
+            "New Connections Review is where you decide what may talk to what.", "Show Me How gives the steps for any change, to do in the Firewalla app."],
+            easy: ["Rules lists what your Firewalla allows and blocks.", "Show Me How gives the steps for any change, to do in the Firewalla app."] },
+        { title: "Traffic", targets: ['#nav [data-section="s-traffic"]'], lines: ["What your clients talk to on the internet, and to each other.", "Firewalla's alarms are here too."],
+            easy: ["What your clients talk to on the internet.", "Firewalla's alarms are here too."] },
+        { title: "Claude", targets: ['#nav [data-section="s-claude"]'], lines: ["Ask a question about your network in plain words.", "Answers worth keeping go to the Knowledge Base."],
+            easy: ["Ask a question about your network in plain words."] },
+        { title: "Settings", targets: ['#navFoot [data-page="settings"]'], lines: ["The dashboard's own health, email alerts and the daily digest.", "Take the Tour Again is here."] },
+        { title: "IP Mask and Easy Mode", targets: ["#ipMask", "#easyMode"], lines: ["IP Mask hides addresses, for screenshots you pass on.",
+            "Easy Mode leaves a simpler menu, for someone less technical."] },
+        { title: "Where to Start", targets: ['#nav [data-page="status"]'], lines: ["Start with Needs You on Status.", "Then Rules & Access › Network Assessment."],
+            easy: ["Start with Needs You on Status."] }
+    ];
+    // One line the first time a page is opened, after the tour (D-1078): what
+    // to look at first. Gone for good with Got It, per browser.
+    const pageHints = {
+        status: "Look at the banner first, then Needs You: everything waiting for you is listed there.",
+        policy: "Each row is a new connection between your clients. Tick the ones you agree with, then Concur or Non-Concur.",
+        trafficpath: "Pick a source and a target to see, gate by gate, what decides a connection between them.",
+        rulepriority: "A reference: the order in which Firewalla applies its checks. Nothing to do here.",
+        violations: "Traffic that broke a rule you already have. An empty page is good news.",
+        decided: "Your past decisions, newest first. Open one to see why it was decided and what was done.",
+        allowed: "Which clients really talk to each other, with their ports. Useful before you tighten a rule.",
+        planned: "Changes you have decided on but not made yet. Each has Show Me How.",
+        alarms: "Firewalla's alarms. Start with Needs You at the top; the rest is history.",
+        outbound: "Internet traffic that looks unusual, assessed for you. Start with the items marked for review.",
+        internet: "Both internet connections: which one is in use, speed and outages.",
+        network: "Your equipment and how it is wired. Click a unit for its ports and clients.",
+        equipment: "The history of your access points and switches: outages and what caused them.",
+        devices: "Every client. Use the search box, or click a tile at the top to filter.",
+        rules: "Every rule on your router, by number and name. Hover a rule number anywhere to see its name.",
+        groups: "Your groups, what each one fences (VqLAN, Isolation) and what it may reach.",
+        targetlists: "Your target lists and what uses them. List Check at the top shows anything out of step.",
+        assessment: "Start with Questions, then Findings: each box is one job with its steps.",
+        howto: "Say what should be allowed or blocked between which clients; it gives the steps for the Firewalla app.",
+        sitetest: "Type a website to see whether your network blocks it, and what blocks it.",
+        inbound: "Attempts from the internet that your router turned away. Normally nothing to do.",
+        netmanager: "Your networks, their addresses and which clients are on each.",
+        vpn: "Your VPN connections and who is connected.",
+        wifi: "Wi-Fi clients: which access point each is on and how good its signal is.",
+        radios: "Your access points' channels and how busy each one is.",
+        openunused: "Access you opened that nothing has used for 30 days. Narrow It or Close It on each.",
+        wired: "Wired clients and the switch port each one is on.",
+        onboarding: "New clients wait here in Quarantine. Press Onboard on one to say what it may reach.",
+        offboarding: "Clients that are gone but still in Firewalla. Each is taken out step by step.",
+        inallowed: "Connections from the internet that were let in. Check that each one is expected.",
+        localblocked: "Tries between your clients that were blocked. A client that keeps trying may need access, or a look.",
+        patterns: "What each group of clients talks to on the internet, by maker. Start with the marked ones.",
+        internal: "Traffic between your own clients: who talks to whom, and how much.",
+        flows: "What your clients talk to on the internet. Use the filters at the top to narrow it.",
+        activity: "One client's day: what it did and when. Pick a client first.",
+        questions: "Ask about your network in plain words. Earlier conversations are listed below.",
+        knowledge: "Answers you chose to keep. Search them before asking again.",
+        settings: "Check Dashboard Health first; email alerts and the daily digest are set here."
+    };
+
+    window.DashboardCards = { types, register, pages, menuSections, tourStops, pageHints, F, D, filterLabel };
 })();

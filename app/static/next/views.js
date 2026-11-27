@@ -3122,7 +3122,7 @@
     }
     views.assessmentOffer = data => {
         const o = data?.assessment?.offer;
-        if (asOfferShown || !o?.ask) return;
+        if (asOfferShown || !o?.ask || window.FirewallaDashboard?.tour?.running()) return;   // not over the guided tour: asked once it ends
         const dlg = document.getElementById("infoDialog");
         if (!dlg || dlg.open) return;   // another pop-up is open: asked at the next look
         asOfferShown = true;
@@ -3196,7 +3196,9 @@
             // Findings (D-1072, the ones that need no traffic history; owner, 25 Nov 2026: right after
             // Questions): one box per job, as List Check's (D-1062), with Decline (D-1063).
             // List Check's own findings: one line each, done on Target Lists.
-            const AS_KIND = { gear_partial: "NON-FIREWALLA GEAR", gear_hidden: "BEHIND ANOTHER ROUTER", unenforceable: "RULE CAN'T WORK" };
+            const AS_KIND = { gear_partial: "NON-FIREWALLA GEAR", gear_hidden: "BEHIND ANOTHER ROUTER", unenforceable: "RULE CAN'T WORK",
+                never_same_network: "NEVER WORKS", never_partial: "SHARED GEAR", overridden: "OVERRIDDEN", contradiction: "ALLOW AGAINST BLOCK",
+                duplicate: "DUPLICATE", group_to_group: "NOT SUPPORTED", unused: "UNUSED" };
             const finds = a.findings || [], fToDo = finds.filter(x => !x.declined), fNo = finds.filter(x => x.declined), lcs = a.list_check || [];
             const findBox = x => `<article class="lc-item ${x.tone}"><div class="lc-head"><span class="pl-tag ${x.tone}">${AS_KIND[x.kind] || "FINDING"}</span> <b>${F.esc(x.title)}</b>
                     <span class="small muted lc-since">since ${F.dateTime(x.first_seen)}</span></div>
@@ -3204,9 +3206,9 @@
                     <dt>Steps</dt><dd><ol class="lc-steps">${x.steps.map(st => `<li>${F.esc(st)}</li>`).join("")}</ol></dd></dl>
                 <div class="lc-acts">${btn("plain", "as-decline", "no|" + x.id, "Decline", "Don't offer this again: it leaves this list and Needs You, unless it becomes a different finding.")}</div></article>`;
             const findingsBox = `<section class="st-box" id="as-findings"><div class="st-head"><h2>Findings</h2>
-                    <span class="small muted">${F.count(fToDo.length)} to do${fNo.length ? ` · ${F.count(fNo.length)} declined` : ""} · from your settings, no traffic needed · the 7-day and 30-day findings come later</span></div>
+                    <span class="small muted">${F.count(fToDo.length)} to do${fNo.length ? ` · ${F.count(fNo.length)} declined` : ""} · from your settings and the router's count of rule hits · the 7-day traffic findings come later</span></div>
                 ${fToDo.length ? `<div class="small muted">Each box is one job on its own. The numbered steps inside a box belong together: do them in order. A box goes by itself once it is put right.</div>
-                    <h3>To Do <span class="small muted">· ${F.count(fToDo.length)}</span></h3>${fToDo.map(findBox).join("")}` : `<div class="small good">Nothing to do: every client is where Firewalla can enforce what it sets for it.</div>`}
+                    <h3>To Do <span class="small muted">· ${F.count(fToDo.length)}</span></h3>${fToDo.map(findBox).join("")}` : `<div class="small good">Nothing to do: every client is where Firewalla can enforce what it sets for it, and every rule can do what it says.</div>`}
                 ${lcs.length ? `<h3>From List Check <span class="small muted">· ${F.count(lcs.length)} · done on ${F.go("Target Lists", F.target("targetlists", { at: "tl-check" }))}</span></h3>
                     ${lcs.map(x => `<div class="small">${F.go(F.esc(x.list || "List"), F.target("targetlists", { at: "tl-check" }))} · ${F.esc(x.title || "")}</div>`).join("")}` : ""}
                 ${fNo.length ? `<details class="lc-declined"><summary>Declined <span class="small muted">· ${F.count(fNo.length)} · not offered again</span></summary>
@@ -3271,11 +3273,22 @@
     const onbGo = f => window.FirewallaDashboard.showPage(F.target("onboarding", f), "replace");
     const onbList = (names, none) => names && names.length ? F.esc(names.slice(0, 12).join(", ")) + (names.length > 12 ? ` and ${names.length - 12} more` : "") : `<span class="muted">${none}</span>`;
     const onbRefs = v => String(v || "").split(",").filter(Boolean);
+    // From Scratch's answers about each ticked target, in the address as how =
+    // "<to|frm>~<ref>~<purpose>~<ports|learn>~<tcp|udp>~<ports>~<other purpose>", ";" between targets.
+    const ONB_HOW = ["side", "ref", "purpose", "mode", "proto", "ports", "other"];
+    const onbHow = v => String(v || "").split(";").filter(Boolean).map(t => t.split("~"));
+    const onbHowSet = (v, side, ref, field, value) => {
+        const rows = onbHow(v);
+        let row = rows.find(r => r[0] === side && r[1] === ref);
+        if (!row) rows.push(row = [side, ref, "", "", "tcp", "", ""]);
+        row[ONB_HOW.indexOf(field)] = String(value || "").replace(/[~;]/g, " ").trim();
+        return rows.map(r => r.join("~")).join(";");
+    };
     views.onboarding = {
         noFilterBar: true,
         source() {
             const f = onbFilter();
-            const q = ["mac", "mode", "like", "to", "frm", "name", "conn", "want", "wport", "pmac", "feat"].filter(k => f[k]).map(k => `${k}=${encodeURIComponent(f[k])}`).join("&");
+            const q = ["mac", "mode", "like", "to", "frm", "name", "conn", "want", "wport", "pmac", "feat", "net", "how"].filter(k => f[k]).map(k => `${k}=${encodeURIComponent(f[k])}`).join("&");
             return "/api/onboarding-page" + (q ? "?" + q : "");
         },
         every: 30,
@@ -3292,13 +3305,31 @@
                 const [side, ref] = String(value).split(/\|(.*)/s);
                 const list = onbRefs(f[side]);
                 f[side] = (list.includes(ref) ? list.filter(r => r !== ref) : list.concat(ref)).join(",") || undefined;
+                // Unticked: its answers go too.
+                if (list.includes(ref)) f.how = onbHow(f.how).filter(r => !(r[0] === side && r[1] === ref)).map(r => r.join("~")).join(";") || undefined;
                 onbGo(f);
+                return null;
+            }
+            // From Scratch (D-1064): the internet Yes / No, and each ticked target's purpose and ports
+            // (value = "<side>~<ref>~<field>|<answer>").
+            if (action === "ob-net") { onbGo({ ...f, net: value }); return null; }
+            if (action === "ob-learn-done") return post("/api/onboarding/learning-done", { id: value });
+            if (action === "ob-how") {
+                const [key, answer] = String(value).split(/\|(.*)/s);
+                const [side, ref, field] = key.split("~");
+                // Use These (Use What Others Use): that line's protocol and ports become the answer.
+                if (field === "use") {
+                    const [proto, ports] = answer.split("|");
+                    onbGo({ ...f, how: onbHowSet(onbHowSet(onbHowSet(f.how, side, ref, "mode", "ports"), side, ref, "proto", proto), side, ref, "ports", ports) });
+                    return null;
+                }
+                onbGo({ ...f, how: onbHowSet(f.how, side, ref, field, answer) });
                 return null;
             }
             if (action === "ob-start") {
                 const p = onbPage?.plan;
                 if (!p?.steps?.length) { say("Say how it gets its access first."); return null; }
-                const r = await post("/api/onboarding/start", { mac: p.mac, mode: p.mode, like: f.like || "", to: f.to || "", frm: f.frm || "", name: p.name, pmac: f.pmac || "", feat: f.feat || "" });
+                const r = await post("/api/onboarding/start", { mac: p.mac, mode: p.mode, like: f.like || "", to: f.to || "", frm: f.frm || "", name: p.name, pmac: f.pmac || "", feat: f.feat || "", net: f.net || "", how: f.how || "" });
                 if (!r.ok) say(r.error || "Couldn't add it.");
                 return r;
             }
@@ -3373,11 +3404,36 @@
                     const opts = p.clients.map(m => `<option value="${F.esc(m.mac)}"${f.like === m.mac ? " selected" : ""}>${F.esc(m.name)}${m.group ? ` · ${F.esc(m.group)}` : " · no group"}</option>`).join("");
                     ask = `<div class="hw-form"><label class="small">Mirror <select data-view-search="like"><option value="">Pick a client…</option>${opts}</select></label></div>`;
                 } else if (p.mode === "scratch") {
-                    const picker = (side, title) => `<div class="hw-pick"><h3>${title}</h3><div class="small muted">Groups, and clients in no group.</div>
+                    // From Scratch asks and assumes nothing (D-1060 / D-1064 / D-1069): the internet
+                    // Yes or No, then for each target ticked what the access is for and its ports
+                    // (typed, or Learning Mode). The steps come once everything is answered.
+                    const seg = (on, key, label, tip) => `<button type="button" class="${on ? "on-g" : ""}" data-view-action="ob-how" data-value="${F.esc(key)}"${tip ? ` data-tip="${F.esc(tip)}"` : ""}>${label}</button>`;
+                    const detail = (side, ch) => {
+                        const x = (p.picks || []).find(k => k.side === side && k.ref === ch.ref);
+                        if (!x) return "";
+                        const key = `${side}~${ch.ref}~`;
+                        return `<div class="ob-how">
+                            <label class="small">What for? <select data-view-action="ob-how" data-value="${F.esc(key)}purpose"><option value="">Pick…</option>${p.purposes.map(([id, n]) => `<option value="${id}"${x.purpose === id ? " selected" : ""}>${F.esc(n)}</option>`).join("")}</select></label>
+                            ${x.purpose === "other" ? `<input type="text" data-view-action="ob-how" data-value="${F.esc(key)}other" value="${F.esc(x.other)}" placeholder="what it is for" maxlength="40" aria-label="What it is for">` : ""}
+                            <span class="hw-seg">${seg(x.mode === "ports", key + "mode|ports", "I Know The Ports", "You type the ports; only those are opened.")}${seg(x.mode === "learn", key + "mode|learn", "Learning Mode",
+                                "Every port is opened to this one target only, so the traffic can be watched. It is listed under Learning Mode on this page, to narrow later with Show Me How.")}${side === "to" ? seg(x.mode === "copy", key + "mode|copy", "Use What Others Use",
+                                "Lists who already reaches this target and on which ports (from your rules and the last 7 days of traffic), to copy.") : ""}</span>
+                            ${x.mode === "copy" ? `<div class="ob-others">${(x.others || []).length ? x.others.map(o => `<div class="small"><b>${F.esc(o.who)}</b> · ${F.esc(o.words)} <span class="muted">· ${F.esc(o.note)}</span>
+                                ${o.usable ? btn("plain", "ob-how", `${key}use|${o.protocol}|${o.ports}`, "Use These") : `<span class="muted">· nothing to copy: no ports named</span>`}</div>`).join("")
+                                : `<div class="small muted">Nobody reaches it yet: type the ports, or use Learning Mode.</div>`}</div>` : ""}
+                            ${x.mode === "ports" ? `<select data-view-action="ob-how" data-value="${F.esc(key)}proto" aria-label="Protocol"><option value="tcp"${x.proto === "tcp" ? " selected" : ""}>TCP</option><option value="udp"${x.proto === "udp" ? " selected" : ""}>UDP</option></select>
+                                <input type="text" data-view-action="ob-how" data-value="${F.esc(key)}ports" value="${F.esc(x.ports)}" placeholder="445 or 80,443 or 8000-8100" maxlength="120" aria-label="Ports">` : ""}
+                            ${x.missing ? `<span class="small warn">Still needed: ${F.esc(x.missing)}</span>` : `<span class="small good">✓</span>`}</div>`;
+                    };
+                    const picker = (side, title) => `<div class="hw-pick"><h3>${title}</h3><div class="small muted">Groups, and clients in no group. For each one you tick: what it is for, then its ports or Learning Mode.</div>
                         ${p.choices.map(ch => `<label class="small hw-chk"><input type="checkbox" data-view-action="ob-toggle" data-value="${side}|${F.esc(ch.ref)}"${onbRefs(f[side]).includes(ch.ref) ? " checked" : ""}>
-                            ${ch.kind === "group" ? `<b>${F.esc(ch.name)}</b> <span class="muted">(group, ${ch.count})</span>` : `${F.esc(ch.name)} <span class="muted">(no group)</span>`}</label>`).join("")}</div>`;
-                    ask = `<div class="hw-columns">${picker("to", `What should ${F.esc(p.name)} be able to reach?`)}${picker("frm", `What should be able to reach ${F.esc(p.name)}?`)}</div>
-                        <div class="small muted">Nothing ticked on a side: nothing, that way. Every port, unless you narrow it later with Show Me How.</div>
+                            ${ch.kind === "group" ? `<b>${F.esc(ch.name)}</b> <span class="muted">(group, ${ch.count})</span>` : `${F.esc(ch.name)} <span class="muted">(no group)</span>`}</label>${detail(side, ch)}`).join("")}</div>`;
+                    const netAsk = `<div class="ob-net"><b>Does ${F.esc(p.name)} need the internet?</b>
+                        <span class="hw-seg"><button type="button" class="${p.net === "yes" ? "on-g" : ""}" data-view-action="ob-net" data-value="yes">Yes</button><button type="button" class="${p.net === "no" ? "on-r" : ""}" data-view-action="ob-net" data-value="no">No</button></span>
+                        <span class="small muted">${p.net === "no" ? "A Block Internet rule goes on its group." : p.net === "yes" ? "It gets the internet, with your network-wide protections." : "Not answered yet."}</span></div>`;
+                    ask = `${netAsk}<div class="hw-columns">${picker("to", `What should ${F.esc(p.name)} be able to reach?`)}${picker("frm", `What should be able to reach ${F.esc(p.name)}?`)}</div>
+                        <div class="small muted">Nothing ticked on a side: nothing, that way.</div>
+                        ${(p.waiting || []).length ? `<div class="hw-warn"><b>Before the steps can be worked out, still to answer:</b>${p.waiting.map(t => `<div>• ${F.esc(t)}</div>`).join("")}</div>` : ""}
                         ${(p.features || []).length ? `<div class="hw-pick" style="margin-top:12px"><h3>Firewalla Features</h3>
                             <div class="small muted">Features you turned on for some groups or clients don't reach a new group of its own by themselves. Tick the ones it should have; box-wide ones already apply.</div>
                             ${p.features.map(ft => ft.box ? `<div class="small hw-chk"><span class="good">✓</span> <b>${F.esc(ft.name)}</b> <span class="muted">· on for all clients: already applies</span></div>`
@@ -3393,7 +3449,8 @@
                     ${gives ? `<h3>It Joins ${F.esc(p.group_name || "")}, Which Gives</h3><table class="cl-table ob-kv"><tbody>${giveRows}</tbody></table>` : ""}
                     ${p.dap?.text ? `<h3>Device Active Protect</h3><div class="small">${F.esc(p.dap.text)} <span class="muted">· switched on by network${(p.dap.networks || []).length ? ` (${F.esc(p.dap.networks.join(", "))})` : ""}; Firewalla decides which clients there it covers</span></div>` : ""}
                     ${(p.changes || []).length ? `<h3>What Else Changes</h3>${p.changes.map(c => `<div class="small">• ${F.esc(c)}</div>`).join("")}` : ""}
-                    ${p.mode === "scratch" && p.group_name ? `<div class="small">It goes into a new group of its own, <b>${F.esc(p.group_name)}</b>, with VqLAN on: it reaches, and is reached by, only what you tick. It has the internet with your network-wide protections (Ad Block, Content Filtering); the group has no internet rules of its own.</div>` : ""}</section>`;
+                    ${p.mode === "scratch" && p.group_name ? `<div class="small">It goes into a new group of its own, <b>${F.esc(p.group_name)}</b>, with VqLAN on: it reaches, and is reached by, only what you tick. ${p.net === "no" ? "It gets no internet: a Block Internet rule goes on the group."
+                        : p.net === "yes" ? "It has the internet with your network-wide protections (Ad Block, Content Filtering); the group has no internet rules of its own." : ""}</div>` : ""}</section>`;
                 const r = p.reach;
                 if (r && (p.steps || []).length) {
                     const m = r.mate;
@@ -3438,10 +3495,29 @@
                     <div class="small">Its address changed from ${F.esc(e.old)} to ${F.esc(e.new)}: the new entry has none of its setup (it starts in Quarantine). Onboard the new one like the old, set the phone to Fixed, and take the old entry away.</div>
                     <div>${F.go("Onboard the New One", F.target("onboarding", { mac: e.new, like: e.old }))} · ${F.go("Offboard the Old One", F.target("offboarding", { mac: e.old }))} ·
                         ${e.acked ? btn("plain", "ob-rot-ack", "undo|" + e.id, "Undo Acknowledge") : btn("plain", "ob-rot-ack", "ack|" + e.id, "Acknowledge")}</div></div>`).join("")}</section>` : "";
+            // Learning Mode (D-1069): its own section. Every port is open to each target listed
+            // while the traffic is watched; from day 7 the ports seen come with the steps to narrow.
+            const learn = page.learning || [];
+            const learnItem = l => {
+                const seen = (l.seen || []).map(s => `${F.esc(s.protocol)} ${s.port} <span class="muted">(${F.count(s.connections)})</span>`).join(" · ");
+                const state = l.narrowed ? `<span class="pl-tag good">NARROWED</span>` : l.ready ? `<span class="pl-tag warn">READY TO NARROW</span>` : `<span class="pl-tag muted">LEARNING</span>`;
+                return `<article class="lc-item ${l.ready ? "warn" : ""}" data-busy-scope><div class="lc-head">${state} <b>${F.esc(l.side === "to" ? `${l.name} → ${l.target}` : `${l.target} → ${l.name}`)}</b>
+                        <span class="small muted lc-since">since ${F.dateTime(l.started)} · day ${F.count(l.days)} of ${l.needed}</span></div>
+                    <dl class="lc-facts"><dt>What For</dt><dd>${F.esc(l.why)}</dd>
+                        <dt>Open Now</dt><dd>${l.narrowed ? "Only the ports on its list." : "Every port, to this one target."}${l.list ? ` Target list: <b>${F.esc(l.list)}</b>${l.list_found ? "" : ` <span class="muted">(not made yet, or not read from the MSP yet)</span>`}` : ""}</dd>
+                        <dt>Ports Seen</dt><dd>${seen || `<span class="muted">none yet</span>`}${seen ? ` <span class="small muted">· connections in brackets</span>` : ""}</dd>
+                        ${l.steps.length ? `<dt>Steps</dt><dd><ol class="lc-steps">${l.steps.map(st => `<li>${F.esc(st)}</li>`).join("")}</ol>
+                            <pre class="hw-pre">${F.esc(l.lines.join("\n"))}</pre>
+                            ${l.dropped.length ? `<div class="small warn">Left out, because nothing used it: ${F.esc(l.dropped.join(", "))}. Keep its line (with the ports you expect) if it is still needed.</div>` : ""}</dd>`
+                        : l.ready ? `<dt>Steps</dt><dd><span class="muted">${l.list_found ? "No traffic was seen, so there is nothing to narrow to: if the access isn't needed, take it away with Show Me How." : "Its target list isn't readable yet."}</span></dd>` : ""}</dl>
+                    <div class="lc-acts">${btn("plain", "ob-learn-done", l.id, "Done Learning", "Takes this off the Learning Mode list. Nothing in Firewalla changes.")}</div></article>`;
+            };
+            const learnBox = learn.length ? `<section class="st-box"><div class="st-head"><h2>Learning Mode</h2><span class="small muted">every port is open to these targets while the traffic is watched · after ${learn[0].needed} days the ports seen come with the steps to narrow · it never closes by itself</span></div>
+                ${learn.map(learnItem).join("")}</section>` : "";
             const changes = (page.changes || []).filter(x => x.request?.kind === "onboard");
             const changeBox = `<section class="st-box"><div class="st-head"><h2>Changes</h2></div>${changes.length ? hwChanges(changes) : `<div class="small muted">Nothing in progress.</div>`}</section>`;
             return `<div class="status-view howto-view">${banner}${checkBox}
-                <div class="st-row"><div class="st-main">${rotBox}${quarantineBox}${setup}${looseBox}</div><div class="st-side">${changeBox}</div></div></div>`;
+                <div class="st-row"><div class="st-main">${rotBox}${quarantineBox}${setup}${learnBox}${looseBox}</div><div class="st-side">${changeBox}</div></div></div>`;
         }
     };
 
@@ -5562,6 +5638,10 @@ It is in New Connections Review › 2 · Review. Show Me How on it gives the ste
     // Settings → Theme (owner, 19 Nov 2026, D-680; Sci-Fi 20 Nov): Sci-Fi,
     // Dark or Light, saved on the NAS for every browser. Each choice shows a small preview drawn in
     // that theme's own colours (the swatch carries data-theme).
+    // Settings → Guided Tour (D-1078): the tour again, and with it each page's first-visit line.
+    // No note under the title, like the cards beside it (D-1028, D-1033).
+    const settingsTourBox = () => `<section class="st-box"><div class="st-head"><h2>Guided Tour</h2>${btn("plain", "tour-start", "1", "Take the Tour Again",
+        "A one-minute walk along the menu. Each page's first-visit line shows again afterwards.")}</div></section>`;
     function settingsThemeBox() {
         const T = window.FirewallaDashboard?.theme;
         if (!T) return "";
@@ -5635,6 +5715,7 @@ It is in New Connections Review › 2 · Review. Show Me How on it gives the ste
         every: 30,
         noFilterBar: true,
         async onAction(action, value) {
+            if (action === "tour-start") { window.FirewallaDashboard.tour.start(true); return null; }
             if (action === "digest-test-mail") {
                 const r = await post("/api/digest/test-mail", {});
                 say(r.ok ? "Test email sent" + (r.time ? " at " + r.time : "") + ". Check your inbox (and spam folder)." : "The test email failed: " + (r.error || "unknown error"));
@@ -5738,6 +5819,7 @@ It is in New Connections Review › 2 · Review. Show Me How on it gives the ste
                             <div class="st-pzrow">
                         ${settingsPageSizeBox()}
                         ${settingsThemeBox()}
+                        ${settingsTourBox()}
                             </div>
                             </div>
                         </div>

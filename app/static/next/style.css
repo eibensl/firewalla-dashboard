@@ -729,6 +729,21 @@ body.nav-collapsed #navFoot { margin-top: auto; }
 
 .message { margin: 10px 20px 0; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .message[hidden] { display: none; }
+/* A page's first-visit line (after the guided tour, D-1078). */
+.page-hint { margin: 10px 20px 0; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--inset); font-size: 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.page-hint[hidden] { display: none; }
+/* Guided tour (D-1078): the lit part of the menu, everything else dimmed, one card beside it. */
+.tour { position: fixed; inset: 0; z-index: 300000; }
+.tour[hidden] { display: none; }
+.tour.dim { background: rgba(0, 0, 0, .62); }
+.tour-hole { position: absolute; border-radius: 10px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .62), 0 0 0 2px var(--accent), 0 0 18px var(--accent); pointer-events: none; }
+.tour-hole[hidden] { display: none; }
+.tour-card { position: absolute; width: 340px; max-width: calc(100vw - 16px); background: var(--raised); border: 1px solid var(--accent); border-radius: 10px; padding: 14px 16px; box-shadow: 0 14px 40px rgba(0, 0, 0, .6); }
+.tour-card h3 { margin: 2px 0 8px; font-size: var(--fs-title, 16px); }
+.tour-card p { margin: 0 0 8px; font-size: var(--fs-body); line-height: 1.45; }
+.tour-count { color: var(--muted); font-size: var(--fs-small); }
+.tour-buttons { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.tour-buttons span { flex: 1; }
 .message.good { background: var(--good-bg); color: var(--good-text); }
 .message.warn { background: var(--warn-bg); color: var(--warn-text); }
 .message.bad { background: var(--bad-bg); color: var(--bad-text); }
@@ -2190,6 +2205,10 @@ details.tf-group > summary::-webkit-details-marker { display: none; }
 .hw-pick { background: var(--inset); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; max-height: 360px; overflow: auto; }
 .hw-pick h3 { margin: 0 0 4px; }
 .hw-chk { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.ob-how { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 2px 0 10px 24px; }
+.ob-how .hw-seg button { padding: 3px 10px; }
+.ob-others { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
+.ob-net { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0; font-size: 16px; }
 .hw-cond + .hw-cond { border-top: 1px solid var(--line); padding-top: 8px; }
 .hw-change { border-top: 1px solid var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 4px; }
 .hw-change:first-child { border-top: 0; }

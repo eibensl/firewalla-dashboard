@@ -18,8 +18,10 @@
 # anything it would reach (or be reached by) that you didn't ask for.
 # Client Offboarding (removing a client) is in this file too, further down.
 
+import ipaddress
 import json
 import os
+import re
 import threading
 import time
 
@@ -29,7 +31,8 @@ from core import Fields, INTERFACE_METADATA, app, msp, policy_read_json, state
 from router import access_device_protect, feature_settings, internet_interface_name
 from access import (
     HOWTO_GROUP_SWITCHES, HOWTO_STEP_KEYS, HOWTO_UNTRIED_INTERNET, access_allowed_owner, access_is_gear, access_isolated, access_local_rules, access_paused, access_rule_text,
-    access_sides, access_target_list_side, check_local_access, howto_addresses, howto_app, howto_direction, howto_expect, howto_fit,
+    access_list_entries, access_local_rows, access_sides, access_target_list_side, check_local_access, howto_addresses, howto_app, howto_direction, howto_expect, howto_fit,
+    howto_port,
     howto_id, howto_left_behind, howto_load, howto_lock, howto_mark_done, howto_matching, howto_reserve_step, howto_reserved, howto_save, howto_trial,
 )
 from listcheck import api_quarantine_settings, list_check_lines
@@ -38,6 +41,181 @@ QUARANTINE = "1"   # Firewalla's Quarantine group id
 # Rule purposes Firewalla makes and keeps itself: never copied by hand.
 OB_FIREWALLA_PURPOSES = {"dap", "region_blocking", "advanced_threat_filtering", "family", "firewall"}
 OB_NEW = "new-ob"  # the new group a from-scratch client goes into, until Firewalla gives it an id
+# Start From Scratch asks, and assumes nothing (owner, D-1060 / D-1064 / D-1069):
+# the internet Yes or No, then for each target ticked what the access is for
+# and its ports: typed, or Learning Mode (every port to that one target, to be
+# narrowed once the traffic has been watched).
+OB_PURPOSES = [["print", "Printing"], ["files", "File Sharing"], ["stream", "Streaming / Casting"], ["remote", "Remote Desktop"],
+               ["smart", "Smart Home Control"], ["cameras", "Cameras"], ["backup", "Backup"], ["media", "Media Server"], ["gaming", "Gaming"],
+               ["other", "Other"]]
+OB_PORTS = r"\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*"   # "445", "80,443", "8000-8100"
+OB_LEARNING_FILE = os.environ.get("FIREWALLA_OB_LEARNING_FILE", "/data/onboarding_learning.json")
+ob_learning_lock = threading.Lock()
+
+
+def ob_how(text):
+    """The page's answers about each ticked target:
+    "<to|frm>~<ref>~<purpose>~<ports|learn>~<tcp|udp>~<ports>~<other purpose>",
+    ";" between targets -> {(side, ref): {...}}."""
+    out = {}
+    for part in str(text or "").split(";")[:80]:
+        f = (part.split("~") + [""] * 7)[:7]
+        if f[0] in ("to", "frm") and f[1]:
+            out[(f[0], f[1])] = {"purpose": f[2] if f[2] in dict(OB_PURPOSES) else "", "mode": f[3] if f[3] in ("ports", "learn", "copy") else "",
+                                 "proto": f[4] if f[4] in ("tcp", "udp") else "tcp", "ports": re.sub(r"\s+", "", f[5])[:120],
+                                 "other": f[6].strip()[:40]}
+    return out
+
+
+def ob_pick(side, ref, label, d):
+    """One ticked target with its answers; missing = what is still to say."""
+    why = (d.get("other") if d.get("purpose") == "other" else dict(OB_PURPOSES).get(d.get("purpose") or "")) or ""
+    ports = d.get("ports") or ""
+    ports_ok = bool(re.fullmatch(OB_PORTS, ports)) and all(1 <= int(n) <= 65535 for n in re.findall(r"\d+", ports))
+    missing = ("what the access is for" if not why else "its ports, or Learning Mode" if not d.get("mode")
+               else "which ports to copy (press Use These on one line), or type them, or Learning Mode" if d["mode"] == "copy"
+               else "the port numbers (like 445, or 80,443, or 8000-8100)" if d["mode"] == "ports" and not ports_ok else "")
+    return {"side": side, "ref": ref, "name": label, "purpose": d.get("purpose") or "", "other": d.get("other") or "", "why": why,
+            "mode": d.get("mode") or "", "proto": d.get("proto") or "tcp", "ports": ports, "missing": missing, "ok": not missing}
+
+
+OB_OTHERS_DAYS = 7     # how far back Use What Others Use looks at recorded traffic
+OB_OTHERS_PORTS = 6    # most ports named from one source's traffic
+
+
+def ob_others(ref, mine, sides, groups):
+    """Use What Others Use (D-1069): who already reaches this target, on which
+    ports: from your rules (target lists that hold one of its addresses,
+    Allowed Devices entries naming it) and from the last 7 days of recorded
+    traffic to it. -> [{who, source "rule" | "allowed" | "traffic", protocol,
+    ports, words, note, usable}]; usable = it names ports of one protocol,
+    which Use These can copy."""
+    members = [m for m in ((groups.get(ref[2:]) or {}).get("members") or [] if ref.startswith("g:") else [ref[2:]]) if m in sides]
+    own = lambda mac: (groups.get(sides[mac]["groups"][0]) or {}).get("name") if sides[mac]["groups"] else sides[mac]["name"]
+    span = lambda ports: ",".join(str(lo) if lo == hi else f"{lo}-{hi}" for lo, hi in ports)
+    out, have = [], set()
+
+    def add(who, source, protocol, ports, note):
+        key = (who, protocol, ports)
+        if who and key not in have:
+            have.add(key)
+            out.append({"who": who, "source": source, "protocol": protocol or "", "ports": ports,
+                        "words": f"{protocol.upper() if protocol else 'TCP and UDP'} {ports.replace(',', ', ')}" if ports else "every port",
+                        "note": note, "usable": bool(ports) and protocol in ("tcp", "udp")})
+
+    for r in access_local_rules():
+        if r.get("action") != "allow":
+            continue
+        listed = access_target_list_side(r)
+        if listed:
+            far = r.get("applies_on" if listed == "matching" else "matching") or {}
+            for e in access_list_entries(r) or []:
+                if e["net"] is not None and any(ob_in_net(ip, e["net"]) for m in members for ip in sides[m].get("ips") or []):
+                    add(far.get("name"), "rule", e["protocol"], span(e["ports"]) if e["ports"] else "", f"its rule \"{access_rule_text(r)}\"")
+        elif r.get("purpose") == "ap_allow":
+            owner, ticked = access_allowed_owner(r)
+            ends = {(o.get("kind"), str(o.get("id"))): o for o in (owner, ticked)}
+            mine_end = next((k for k in ends if (k[0] == "group" and ref == f"g:{k[1]}") or (k[0] == "device" and k[1].upper() in members)), None)
+            if mine_end:
+                other = next(o for k, o in ends.items() if k != mine_end) if len(ends) == 2 else None
+                if other:
+                    add(other.get("name"), "allowed", None, "", "an Allowed Devices entry")
+    seen = {}
+    for m in members:
+        for src, dst, outcome, protocol, port, n, *_ in access_local_rows(OB_OTHERS_DAYS * 24, m):
+            if outcome == "allowed" and protocol and dst == m and src in sides and src != mine:
+                ports = seen.setdefault((own(src), str(protocol).lower()), {})
+                ports[int(port)] = ports.get(int(port), 0) + (n or 0)
+    for (who, protocol), ports in sorted(seen.items(), key=lambda t: -sum(t[1].values())):
+        top = sorted(sorted(ports, key=lambda p: -ports[p])[:OB_OTHERS_PORTS])
+        add(who, "traffic", protocol, ",".join(str(p) for p in top),
+            f"seen in the last {OB_OTHERS_DAYS} days ({sum(ports.values()):,} connections" + (f", its {OB_OTHERS_PORTS} busiest ports of {len(ports)}" if len(ports) > OB_OTHERS_PORTS else "") + ")")
+    return out[:30]
+
+
+def ob_in_net(ip, net):
+    try:
+        return ipaddress.ip_address(ip) in net
+    except ValueError:
+        return False
+
+
+def ob_learning_load():
+    return (policy_read_json(OB_LEARNING_FILE) or {}).get("items") or []
+
+
+def ob_learning_save(items):
+    temporary = OB_LEARNING_FILE + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump({"items": items}, handle)
+    os.replace(temporary, OB_LEARNING_FILE)
+
+
+OB_LEARNING_DAYS = 7      # after this long the ports seen are offered to narrow to
+OB_LEARNING_PORTS = 20    # most ports of one protocol put on one list line
+
+
+def ob_learning_view(sides, groups):
+    """The Learning Mode section (D-1069): each target opened on every port,
+    with the ports the recorder has really seen since (allowed connections,
+    in the direction asked), and from day 7 the steps to narrow its list to
+    them: the list's lines again, each with its ports. A line nothing used
+    is left out. It never closes by itself: Done Learning takes it off."""
+    now, out = time.time(), []
+    norm = lambda t: str(t or "").strip().lower()
+    by_ip = {ip: m for m, s in sides.items() for ip in s.get("ips") or []}
+    for i in ob_learning_load():
+        mine, to = i["mac"], i["side"] == "to"
+        members = set((groups.get(i["ref"][2:]) or {}).get("members") or []) if i["ref"].startswith("g:") else {i["ref"][2:]}
+        hours = min(int((now - i["started"]) // 3600) + 1, 60 * 24)
+        seen = {}   # the client the traffic went to -> protocol -> port -> connections
+        for src, dst, outcome, protocol, port, n, _records, _size, last, *_ in access_local_rows(hours, mine):
+            if outcome == "allowed" and protocol and (last or 0) >= i["started"] and (src == mine and dst in members if to else dst == mine and src in members):
+                ports = seen.setdefault(dst, {}).setdefault(str(protocol).lower(), {})
+                ports[int(port)] = ports.get(int(port), 0) + (n or 0)
+        total = {}
+        for per in seen.values():
+            for proto, ports in per.items():
+                for port, n in ports.items():
+                    total[(proto, port)] = total.get((proto, port), 0) + n
+        tl = next((t for t in msp["lists"].values() if norm(t.get("name")) == norm(i.get("list"))), None) if i.get("list") else None
+        lines, dropped = [], []
+        for line in (tl or {}).get("targets") or []:
+            address, _, ports = str(line).partition(",")
+            if ports:
+                lines.append(str(line))   # already narrowed: kept as it is
+                continue
+            per = seen.get(by_ip.get(address.strip())) or {}
+            new = [f"{address.strip()},{proto}:{','.join(str(p) for p in sorted(sorted(ports, key=lambda p: -ports[p])[:OB_LEARNING_PORTS]))}"
+                   for proto, ports in sorted(per.items())]
+            lines += new
+            if not new:
+                dropped.append(sides[by_ip[address.strip()]]["name"] if address.strip() in by_ip else address.strip())
+        days = int((now - i["started"]) // 86400)
+        narrowed = bool(tl) and all("," in str(line) for line in tl.get("targets") or [])
+        ready = days >= OB_LEARNING_DAYS and not narrowed
+        steps = ([f"On the MSP website open Target Lists, then \"{tl['name']}\", then Edit",
+                  "Replace its lines with the lines below (each address now carries the ports that were used)",
+                  "Press Save & Apply. The rule stays as it is: from then on only these ports are open",
+                  "Come back here and press Done Learning"] if ready and tl and lines else [])
+        out.append({**i, "days": days, "needed": OB_LEARNING_DAYS, "ready": ready, "narrowed": narrowed, "list_found": bool(tl),
+                    "seen": [{"protocol": proto.upper(), "port": port, "connections": n}
+                             for (proto, port), n in sorted(total.items(), key=lambda t: -t[1])[:30]],
+                    "steps": steps, "lines": lines if steps else [], "dropped": dropped if steps else []})
+    return out
+
+
+@app.post("/api/onboarding/learning-done")
+def api_onboarding_learning_done(payload: dict = Body(default={})):
+    """Done Learning: the target leaves the Learning Mode section (nothing in
+    Firewalla changes)."""
+    lid = Fields(payload).text("id", 20)
+    with ob_learning_lock:
+        items = ob_learning_load()
+        if not any(i["id"] == lid for i in items):
+            return {"ok": False, "error": "It is no longer listed."}
+        ob_learning_save([i for i in items if i["id"] != lid])
+    return {"ok": True}
 
 
 def ob_private(mac):
@@ -583,10 +761,13 @@ def ob_not_covered(scope, groups, sides):
     return sorted(({"what": k, "where": where_words(v)} for k, v in out.items()), key=lambda i: i["what"].lower())
 
 
-def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, want=None, wport=None, pmac=None, feat=None):
+def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, want=None, wport=None, pmac=None, feat=None, net=None, how=None):
     """Everything the page shows for one client once you say how it gets its
     access (mode "mirror" with like = a client, or "scratch" with to / frm =
-    refs), with "_fix" for I'm Doing This."""
+    refs, net = "yes" / "no" for the internet and how = each target's purpose
+    and ports, ob_how), with "_fix" for I'm Doing This. From scratch there
+    are no steps until every question is answered ("waiting" lists what is
+    still to say)."""
     sides, groups = access_sides()
     x = sides.get(str(mac or "").upper())
     if not x:
@@ -679,6 +860,20 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
                       "note": "VqLAN keeps every other client out, and it from them, except what the steps below open.",
                       "undo": "Nothing (the group goes with the step above's undo).",
                       "watch": {"kind": "pair_group", "members": [x["mac"]], "vqlan": True, "isolation": False, "as": "setting"}})
+        # The internet: asked, never assumed (D-1064). No = a Block Internet rule on its group.
+        net = net if net in ("yes", "no") else None
+        out["net"] = net
+        if net == "no":
+            rname = howto_fit([gname], tail="No Internet")
+            steps.append({"title": f"Block the internet for \"{gname}\"", "copy": True,
+                          "msp": {"path": ["Rules", "Create Rule"], "fields": [
+                              ["Name", rname, rname], ["Action", "Block", None], ["Matching", "Internet › Traffic from & to Internet", None],
+                              ["On", f"FWG Pro (Router) + {gname}", None], ["Schedule", "Always", None]]},
+                          "app": howto_app("rule", name=rname, action="block", matching_path="Set a target › Internet", matching_label="Internet",
+                                           matching_value="Traffic from & to Internet", target="the Internet", on_kind="group", on=gname),
+                          "note": f"You said {name} doesn't need the internet. Then Create. What it reaches on your network is in the steps below.",
+                          "picture": "msp-rule-create.jpg", "undo": f"Delete the rule \"{rname}\".", "untried": HOWTO_UNTRIED_INTERNET,
+                          "watch": {"kind": "own_group_no_internet", "mac": x["mac"]}})
         # Firewalla features for it (D-937): box-wide ones already apply; the rest only if you tick them.
         feats = ob_features(groups)
         out["features"] = feats
@@ -695,14 +890,32 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
                           "watch": {"kind": "own_group_setting", "mac": x["mac"], "keys": [f["key"] for f in switches]}})
         out["dap"] = ob_dap(x, name, sides, None)[0]
         out["changes"] = ob_changes(x, name, None, None)
+        # Each ticked target: what for, and its ports or Learning Mode. Nothing is worked out before all is said.
+        label = {c["ref"]: c["name"] for c in choices}
+        details = ob_how(how)
+        picks = [ob_pick(side, r, label[r], details.get((side, r)) or {}) for side, refs in (("to", want_to), ("frm", want_from)) for r in refs]
+        out["picks"], out["purposes"] = picks, OB_PURPOSES
+        for p in picks:
+            if p["mode"] == "copy" and p["side"] == "to":
+                p["others"] = ob_others(p["ref"], x["mac"], sides, groups)
+        waiting = (["Whether it needs the internet"] if not net else []) + [
+            f"{'It reaches' if p['side'] == 'to' else 'Reaching it:'} {p['name']}: {p['missing']}" for p in picks if not p["ok"]]
+        if waiting:
+            out["waiting"], out["steps"], out["problems"] = waiting, [], []
+            return out
         base = {"add": [], "replace": {}, "remove": [], "groups": {"move": {x["mac"]: OB_NEW}, "new": {OB_NEW: new}}}
         fixes.append(base)
         t_groups = {gid: {**g, "members": [m for m in g.get("members") or [] if m != x["mac"]]} for gid, g in groups.items()}
         t_groups[OB_NEW] = new
         t_sides = {m: ({**sd, "groups": [OB_NEW], "name": name} if m == x["mac"] else sd) for m, sd in sides.items()}
-        label = {c["ref"]: c["name"] for c in choices}
-        for a_refs, b_refs, what in [(["d:" + x["mac"]], [r], f"{name} → {label[r]}") for r in want_to] + [([r], ["d:" + x["mac"]], f"{label[r]} → {name}") for r in want_from]:
-            d = howto_direction("allow", a_refs, b_refs, None, "", "every port", t_sides, t_groups, rules, iso, paused, what, model=True)
+        for p in picks:
+            a_refs, b_refs = (["d:" + x["mac"]], [p["ref"]]) if p["side"] == "to" else ([p["ref"]], ["d:" + x["mac"]])
+            check, suffix, words = howto_port(p["proto"], p["ports"]) if p["mode"] == "ports" else (None, "", "every port")
+            what = ((f"{name} → {p['name']}" if p["side"] == "to" else f"{p['name']} → {name}")
+                    + f" · {p['why']} · {'Learning Mode: every port, to narrow later' if p['mode'] == 'learn' else words}")
+            # The lists the targets before this one are getting: this one's list takes the next number.
+            made = [st["watch"]["name"] for st in steps if (st.get("watch") or {}).get("kind") == "list"]
+            d = howto_direction("allow", a_refs, b_refs, check, suffix, words, t_sides, t_groups, rules, iso, paused, what, model=True, lists_taken=made)
             if d["done"]:
                 continue
             ways = [f for f in d["fixes"] if f["id"] not in ("pair", "own-group") and f["result"]["ok"] == f["result"]["of"]]
@@ -852,7 +1065,7 @@ def ob_mirror(x, shown, m_side, sides, groups, steps):
 
 @app.get("/api/onboarding-page")
 def api_onboarding_page(mac: str = None, mode: str = None, like: str = None, to: str = None, frm: str = None, name: str = None,
-                        conn: str = None, want: str = None, wport: str = None, pmac: str = None, feat: str = None):
+                        conn: str = None, want: str = None, wport: str = None, pmac: str = None, feat: str = None, net: str = None, how: str = None):
     """The Client Onboarding page: Quarantine's check, the clients in it (and
     clients in no group at all), the plan for one, and onboarding changes."""
     sides, groups = access_sides()
@@ -870,14 +1083,14 @@ def api_onboarding_page(mac: str = None, mode: str = None, like: str = None, to:
                      "twin": twin(s)}
     quarantined = [row(sides[m]) for m in (groups.get(QUARANTINE) or {}).get("members") or [] if m in sides]
     loose = [row(s) for s in sides.values() if not s["groups"] and not access_is_gear(s) and s.get("online")]
-    plan = ob_plan(mac, mode, like, to, frm, name, conn, want, wport, pmac, feat) if mac else None
+    plan = ob_plan(mac, mode, like, to, frm, name, conn, want, wport, pmac, feat, net, how) if mac else None
     if plan:
         plan.pop("_fix", None)
     # Onboarding and offboarding changes in progress, as the Changes list shows them (steps seen, saved steps).
     changes = [c for c in howto_mark_done() if (c.get("request") or {}).get("kind") in ("onboard", "offboard") and c.get("status") != "done"]
     return {"check": check, "rotations": (state.get("mac_rotation") or {}).get("events") or [], "quarantined": sorted(quarantined, key=lambda r: str(r["name"]).lower()),
             "loose": sorted(loose, key=lambda r: str(r["name"]).lower()), "plan": plan,
-            "changes": changes, "updated_at": time.time()}
+            "changes": changes, "learning": ob_learning_view(sides, groups), "updated_at": time.time()}
 
 
 @app.post("/api/onboarding/start")
@@ -888,10 +1101,13 @@ def api_onboarding_start(payload: dict = Body(default={})):
     fields = Fields(payload)
     text = lambda k, n: fields.text(k, n, strip=False)
     req = {"mac": text("mac", 40).upper(), "mode": text("mode", 10), "like": text("like", 40).upper(), "to": text("to", 4000), "frm": text("frm", 4000), "name": text("name", 60),
-           "pmac": "1" if payload.get("pmac") in ("1", 1, True) else "", "feat": text("feat", 200)}
-    plan = ob_plan(req["mac"], req["mode"], req["like"], req["to"], req["frm"], req["name"], "ok", None, None, req["pmac"], req["feat"])
+           "pmac": "1" if payload.get("pmac") in ("1", 1, True) else "", "feat": text("feat", 200),
+           "net": text("net", 3), "how": text("how", 8000)}
+    plan = ob_plan(req["mac"], req["mode"], req["like"], req["to"], req["frm"], req["name"], "ok", None, None, req["pmac"], req["feat"], req["net"], req["how"])
     if plan and ob_private(plan["mac"]):
         return {"ok": False, "error": "Private Wi-Fi addresses are not supported: turn private addressing off on the device, then onboard the new entry it makes in Quarantine."}
+    if plan and plan.get("waiting"):
+        return {"ok": False, "error": "Still to answer: " + "; ".join(plan["waiting"][:4]) + "."}
     if not plan or not plan.get("steps"):
         return {"ok": False, "error": "Say how it gets its access first."}
     sides, groups = access_sides()
@@ -908,6 +1124,16 @@ def api_onboarding_start(payload: dict = Body(default={})):
         st = howto_load()
         st["changes"] = [change] + st["changes"][:99]
         howto_save(st)
+    # Learning Mode targets, listed in their own section of the page from now on (D-1069).
+    # Each with the target list its steps make (or add to): the list to narrow later.
+    made_for = lambda p: next((s["watch"]["name"] for s in plan["steps"] if (s.get("watch") or {}).get("kind") == "list"
+                               and str(s.get("for") or "").startswith((f"{plan['name']} → {p['name']}" if p["side"] == "to" else f"{p['name']} → {plan['name']}") + " · ")), None)
+    learning = [{"id": os.urandom(5).hex(), "change": change["id"], "mac": plan["mac"], "name": plan["name"], "group_name": plan.get("group_name"),
+                 "side": p["side"], "ref": p["ref"], "target": p["name"], "why": p["why"], "started": change["started"], "list": made_for(p)}
+                for p in plan.get("picks") or [] if p["mode"] == "learn"]
+    if learning:
+        with ob_learning_lock:
+            ob_learning_save(learning + [i for i in ob_learning_load() if (i["mac"], i["side"], i["ref"]) not in {(n["mac"], n["side"], n["ref"]) for n in learning}])
     # Watched from now on: if the device turns private addressing (back) on, it
     # rejoins as a new entry with its name, listed under Changed Address.
     rotation_watch(req["mac"], [plan["client"]["name"], plan["name"]])

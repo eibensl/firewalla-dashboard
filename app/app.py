@@ -76,7 +76,7 @@ from assistant import (
     digest_mail_settings, digest_public, digest_worker, initialize_questions, questions_worker,
 )
 from setup import (   # the guided setup (its addresses register when it loads)
-    setup_needed,
+    setup_needed, setup_done_at,
 )
 
 
@@ -397,7 +397,8 @@ def api_status(exclude: str = None):
     for attempt in range(5):
         try:
             body = json.dumps(
-                {**{key: value for key, value in list(state.items()) if key not in skip}, "server_now": time.time()},
+                {**{key: value for key, value in list(state.items()) if key not in skip}, "server_now": time.time(),
+                 "setup_done_at": setup_done_at()},   # the guided tour starts after the setup page's Finish
                 default=json_default,
                 allow_nan=False,
                 separators=(",", ":"),

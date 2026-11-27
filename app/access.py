@@ -2658,7 +2658,7 @@ def howto_reserve_step(x):
             "watch": {"kind": "reserved", "mac": x["mac"], "ip": x["ip"]}}
 
 
-def howto_fixes(act, units, srcs, dsts, dst_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused):
+def howto_fixes(act, units, srcs, dsts, dst_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused, lists_taken=()):
     """The ways to get every pair to the wanted verdict, each with its
     steps, what it changes in the model (to try it out) and what it would
     watch for."""
@@ -2685,7 +2685,7 @@ def howto_fixes(act, units, srcs, dsts, dst_picked, pairs, today, rules, groups,
     direction = "outbound" if act == "allow" else "bidirection"
     steps, add, replace = list(prereq), [], {}
     spare = howto_spare_list(dst_ips, suffix) if dst_ips else (None, None, None)
-    extended, made, reused, taken = 0, 0, None, []
+    extended, made, reused, taken = 0, 0, None, list(lists_taken)
     for i, u in enumerate(units):
         old_rule, old_list, why = howto_existing_list(u, rule_action, direction, suffix, dst_ips)
         if old_rule and old_list:
@@ -3583,7 +3583,10 @@ def howto_merged(fixes, words, sides, groups, idx):
     return sorted(out, key=lambda r: (r["an"].lower(), r["bn"].lower()))
 
 
-def howto_direction(act, a_refs, b_refs, port, suffix, words, sides, groups, rules, iso, paused, label, both=False, idx=0, let=frozenset(), model=False):
+def howto_direction(act, a_refs, b_refs, port, suffix, words, sides, groups, rules, iso, paused, label, both=False, idx=0, let=frozenset(), model=False,
+                    lists_taken=()):
+    # lists_taken: names of the lists a plan of several parts has already given out
+    # (Client Onboarding, From Scratch: one list per target, each with its own number).
     want = "allowed" if act == "allow" else "blocked"
     srcs, units, a_picked = howto_expand(a_refs, sides, groups)
     dsts, _, b_picked = howto_expand(b_refs, sides, groups)
@@ -3606,7 +3609,7 @@ def howto_direction(act, a_refs, b_refs, port, suffix, words, sides, groups, rul
     extra = sorted({m for u in units for m in u["members"]} - picked_srcs - {d["mac"] for d in dsts})
     fixes = []
     if need and units and dsts:
-        fixes = howto_fixes(act, units, srcs, dsts, b_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused)
+        fixes = howto_fixes(act, units, srcs, dsts, b_picked, pairs, today, rules, groups, port, suffix, words, iso, sides, paused, lists_taken)
         before_cache, today_cache = {}, {}
         for f in fixes:
             howto_keep(f, idx, let, rules, groups, pairs, probes, iso, want, sides, paused, both, before_cache, suffix, words, today_cache)
@@ -3831,6 +3834,13 @@ def howto_seen(watch):
         own = next((g for g in (state.get("groups") or {}).get("groups") or [] if [str(m).upper() for m in g.get("members") or []] == [mac]), None)
         got = (feature_settings.get("groups") or {}).get(str((own or {}).get("id"))) or {}
         return bool(own) and all(got.get(k) for k in watch.get("keys") or [])
+    if kind == "own_group_no_internet":   # Client Onboarding, From Scratch: a Block Internet rule on the group it is alone in
+        mac = str(watch["mac"]).upper()
+        own = next((g for g in (state.get("groups") or {}).get("groups") or [] if [str(m).upper() for m in g.get("members") or []] == [mac]), None)
+        return bool(own) and any(
+            r.get("disabled") is not True and r.get("action") == "block" and (r.get("applies_on") or {}).get("kind") == "group"
+            and str((r.get("applies_on") or {}).get("id")) == str(own.get("id"))
+            and (r.get("type") in ("mac", "internet") or (r.get("matching") or {}).get("kind") in ("device_control", "internet")) for r in rules)
     if kind == "dap_on":   # Client Onboarding: Device Active Protect turned back on for it (Learning onwards)
         return str((access_device_protect.get(str(watch["mac"]).upper()) or {}).get("state") or "").lower() in ("learning", "optimizing", "active", "ready")
     if kind == "device_setting":   # Client Onboarding: a switch turned on for the client itself

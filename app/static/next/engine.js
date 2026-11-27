@@ -167,13 +167,38 @@
         };
         requestAnimationFrame(step);
     }
-    // A rule named by its number in a page's text ("rule #913", "rules #12
-    // and #15": Claude's answers, notes, steps) opens that rule's popup
-    // (owner, 20 Nov 2026). Text already inside a link, a button or a form
-    // field is left as it is.
-    const RULE_REFS = /<(a|button|textarea|select|option|script|style)\b[\s\S]*?<\/\1>|<[^>]*>|\b[Rr]ules?\s+#\d+(?:(?:,\s*|,?\s+(?:and|or)\s+)#\d+)*/g;
-    const linkRules = html => html.includes("ule #")
-        ? html.replace(RULE_REFS, m => m[0] === "<" ? m : m.replace(/#(\d+)/g, `<a class="rule-link" href="#" data-rule="$1" title="Show this rule">#$1</a>`))
+    // The router's rules by number (/api/rule-names, read at start and again
+    // after 5 minutes): what hovering a rule number shows, and which numbers
+    // in a page's text are rules. The Firewalla app and the MSP show a rule's
+    // name, never its number, so every rule number shows its name on hover
+    // (owner, 22 and 26 Nov 2026).
+    const ruleNames = { at: 0, map: null, loading: null };
+    const loadRuleNames = () => {
+        if (ruleNames.loading || Date.now() - ruleNames.at < 300000) return;
+        const first = !ruleNames.map;
+        // Only a real list is kept (a server mid-restart answers "Not Found").
+        ruleNames.loading = fetch("/api/rule-names").then(r => r.ok ? r.json() : Promise.reject(r.status))
+            .then(m => {
+                ruleNames.map = m;
+                ruleNames.at = Date.now();
+                // The page drawn before the names came: drawn again, with its rule numbers linked.
+                if (first && canvas().dataset.viewHtml !== undefined) canvas().dataset.viewHtml = "";
+            }).catch(() => {}).finally(() => { ruleNames.loading = null; });
+    };
+    const ruleTipText = pid => {
+        const r = ruleNames.map?.[pid];
+        return r ? `Rule #${pid}: ${r.text}${r.action ? " · " + r.action[0].toUpperCase() + r.action.slice(1) : ""}` : "";
+    };
+    // A rule named by its number in a page's text opens that rule's popup
+    // (owner, 20 Nov 2026) and shows its name on hover: "rule #913", "rules
+    // #12 and #15" always, and any other "#980" that is one of the router's
+    // rule numbers (26 Nov 2026: findings and steps name rules as "#888
+    // Block", "Allow #622, #637"). Text already inside a link, a button or a
+    // form field is left as it is ("&#39;" is an apostrophe, not a rule).
+    const RULE_REFS = /<(a|button|textarea|select|option|script|style)\b[\s\S]*?<\/\1>|<[^>]*>|\b[Rr]ules?\s+#\d+(?:(?:,\s*|,?\s+(?:and|or)\s+)#\d+)*|(?<!&)#\d+\b/g;
+    const linkRules = html => html.includes("#")
+        ? html.replace(RULE_REFS, m => m[0] === "<" ? m : m.replace(/#(\d+)/g, (ref, pid) =>
+            m.length > ref.length || ruleNames.map?.[pid] ? `<a class="rule-link" href="#" data-rule="${pid}">${ref}</a>` : ref))
         : html;
 
     function renderView(view, kept) {
@@ -982,17 +1007,54 @@
         box.style.top = y + "px";
     }
 
-    function showTip(target, e) {
-        tip.key = target.getAttribute("data-tip-key") || "";
-        tip.part = tipParts().indexOf(target.closest(".st-box, .gear-part"));
+    // A rule number in plain text under the pointer ("#888" in a popup, a
+    // card or a step), when it is one of the router's rules: its number.
+    function ruleNumberAt(x, y) {
+        const range = document.caretRangeFromPoint?.(x, y), node = range?.startContainer;
+        if (!node || node.nodeType !== 3 || !ruleNames.map || !node.data.includes("#")) return "";
+        const numbers = /#(\d+)\b/g;
+        for (let m; (m = numbers.exec(node.data));) {
+            if (range.startOffset < m.index || range.startOffset > m.index + m[0].length || !ruleNames.map[m[1]]) continue;
+            const word = document.createRange();
+            word.setStart(node, m.index);
+            word.setEnd(node, m.index + m[0].length);
+            if ([...word.getClientRects()].some(b => x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1)) return m[1];
+        }
+        return "";
+    }
+
+    // What the pointer is on that has details to show: { target, text }.
+    // A rule (a link with data-rule, or its number in plain text) shows its
+    // name; a part with data-tip its details; a part with a title shows that
+    // here too, not as the browser's own tooltip: the browser drops its
+    // tooltip and starts it again whenever the page redraws the part, which
+    // flashed (owner, 26 Nov 2026). The title is taken off the part while
+    // the pointer is on it, so the two never show together.
+    function tipAt(el, x, y) {
+        const root = tipRoot();
+        if (!el?.closest || !root.contains(el)) return null;
+        const marked = el.closest("[data-tip], [data-rule], [title]");
+        const target = marked && root.contains(marked) ? marked : null;
+        if (target?.hasAttribute("title")) {
+            if (!target.hasAttribute("data-tip") && !target.hasAttribute("data-rule")) target.setAttribute("data-tip", target.getAttribute("title"));
+            target.removeAttribute("title");
+        }
+        const pid = target?.dataset.rule || ruleNumberAt(x, y);
+        if (pid && ruleTipText(pid)) return { target: target?.dataset.rule ? target : null, text: ruleTipText(pid) };
+        const text = target?.getAttribute("data-tip");
+        return text ? { target, text } : null;
+    }
+
+    function showTip(target, e, text = target.getAttribute("data-tip")) {
+        tip.key = target?.getAttribute("data-tip-key") || "";
+        tip.part = target ? tipParts().indexOf(target.closest(".st-box, .gear-part")) : -1;
         const box = $("tip");
         const home = $("infoDialog").open ? $("infoDialog") : document.body;
         if (box.parentElement !== home) home.appendChild(box);
         // A tip is plain text (names in it could hold anything a device calls
         // itself) unless it was built as HTML with its parts escaped
         // (tipAttrs, the alarm analysis): those carry data-tip-html.
-        const text = target.getAttribute("data-tip");
-        if (target.hasAttribute("data-tip-html")) {
+        if (target?.hasAttribute("data-tip-html") && text === target.getAttribute("data-tip")) {
             if (box.innerHTML !== text) box.innerHTML = text;
         } else if (box.textContent !== text || box.children.length) {
             box.textContent = text;
@@ -1013,19 +1075,25 @@
         $("tip").hidden = true;
     }
 
-    // After a redraw: the part under the pointer is a new element.
+    // After a redraw: the part under the pointer may be a new element.
     function refreshTip() {
-        if ($("tip").hidden || !tip.key) return;
-        // In the same box as before: keys like port-3 repeat on each
-        // picture of a popup (a switch's two parts, several switches).
-        const scope = tip.part >= 0 ? tipParts()[tip.part] || tipRoot() : tipRoot();
-        const target = scope.querySelector(`[data-tip-key="${CSS.escape(tip.key)}"]`);
-        if (target) showTip(target); else hideTip();
+        if ($("tip").hidden) return;
+        if (tip.key) {
+            // In the same box as before: keys like port-3 repeat on each
+            // picture of a popup (a switch's two parts, several switches).
+            const scope = tip.part >= 0 ? tipParts()[tip.part] || tipRoot() : tipRoot();
+            const target = scope.querySelector(`[data-tip-key="${CSS.escape(tip.key)}"]`);
+            if (target) showTip(target); else hideTip();
+            return;
+        }
+        const found = tipAt(document.elementFromPoint(tip.x, tip.y), tip.x, tip.y);
+        if (found) showTip(found.target, null, found.text); else hideTip();
     }
 
     function onTipMove(e) {
-        const target = e.target.closest?.("[data-tip]");
-        if (target) showTip(target, e); else hideTip();
+        loadRuleNames();
+        const found = tipAt(e.target, e.clientX, e.clientY);
+        if (found) showTip(found.target, e, found.text); else hideTip();
     }
 
     function renderPage(samePage = false) {
@@ -1578,6 +1646,7 @@
         const page = pages.find(p => p.id === pageId);
         $("pageTitle").textContent = page.label;
         $("pageSubtitle").textContent = page.subtitle;
+        pageHint();
         showSite();
         renderNav();   // the active heading names this page
         if (!samePage) $("canvasScroller").scrollTo(0, 0);
@@ -2037,6 +2106,7 @@
             recordHistory(data);
             if (firstData) { showSite(); renderNav(); renderFilterBar(); renderPage(); }
             else refreshPage();
+            tourAuto(data);   // the guided tour, after the setup page's Finish (D-1078); the pop-up below waits for it
             window.DashboardViews?.assessmentOffer?.(data);   // Network Assessment's first-run pop-up (D-1072)
         } catch (error) {
             state.lastFetchOk = false;
@@ -2169,25 +2239,7 @@
         };
         canvas().addEventListener("input", onSearch);
         canvas().addEventListener("change", e => { if (e.target.matches("select[data-view-search]")) onSearch(e); });
-        // Rule hover tips (owner, 22 Nov 2026): anything with data-rule="<pid>"
-        // (a rule number or a rule name, on pages and in popups) shows both
-        // on hover: "Rule #980: PCs to All Others · Block". The names come
-        // from /api/rule-names, read at start and again after 5 minutes.
-        const ruleNames = { at: 0, map: null, loading: null };
-        const loadRuleNames = () => {
-            if (ruleNames.loading || Date.now() - ruleNames.at < 300000) return;
-            // Only a real list is kept (a server mid-restart answers "Not Found").
-            ruleNames.loading = fetch("/api/rule-names").then(r => r.ok ? r.json() : Promise.reject(r.status))
-                .then(m => { ruleNames.map = m; ruleNames.at = Date.now(); }).catch(() => {}).finally(() => { ruleNames.loading = null; });
-        };
         loadRuleNames();
-        document.addEventListener("mouseover", e => {
-            const el = e.target.closest?.("[data-rule]");
-            if (!el) return;
-            loadRuleNames();
-            const r = ruleNames.map?.[el.dataset.rule];
-            if (r) el.title = `Rule #${el.dataset.rule}: ${r.text}${r.action ? " · " + r.action[0].toUpperCase() + r.action.slice(1) : ""}`;
-        });
         canvas().addEventListener("click", e => {
             // data-jump="<id>" scrolls to that part of the page and outlines
             // it briefly (the Status banner -> Needs Attention).
@@ -2243,7 +2295,8 @@
         });
         // A dropdown with data-view-action: its data-value, "|", the choice.
         canvas().addEventListener("change", e => {
-            if (e.target.matches("select[data-view-action]")) runAction(e.target, `${e.target.dataset.value}|${e.target.value}`);
+            // A dropdown or a text box that is an action of the page's own (Client Onboarding's ports box): its value goes with it.
+            if (e.target.matches("select[data-view-action], input[type=text][data-view-action]")) runAction(e.target, `${e.target.dataset.value}|${e.target.value}`);
         });
         canvas().addEventListener("mousemove", onTipMove);
         canvas().addEventListener("mouseleave", hideTip);
@@ -2299,10 +2352,114 @@
         } catch (_) { /* offline: try again next time */ }
     }
 
+    // ------------------------------------------------------------------
+    // Guided tour (owner, 26 Nov 2026, D-1078): a short walk along the menu
+    // for someone who has just installed the dashboard. One card at a time
+    // beside the part of the menu it talks about, that part lit and the
+    // rest dimmed; Back, Next, Skip Tour; clicking outside does nothing,
+    // Esc skips. It starts by itself only after the setup page's Finish
+    // (the status data then carries setup_done_at, newer than this
+    // browser's "tour done"), so a copy never set up that way, like the
+    // owner's own, shows it only from Settings › Take the Tour Again. After
+    // the tour each page shows one line on its first visit, with Got It.
+    // Remembered per browser (like Easy Mode): { done, hints: { page: 1 } }.
+    // ------------------------------------------------------------------
+    const TOUR_KEY = "firewallaTour";
+    const tourMemo = () => { try { return JSON.parse(localStorage.getItem(TOUR_KEY) || "{}") || {}; } catch (_) { return {}; } };
+    const tourSave = memo => { try { localStorage.setItem(TOUR_KEY, JSON.stringify(memo)); } catch (_) { /* no storage */ } };
+    const tour = { at: -1, stops: [], checked: false };
+    const tourParts = stop => (stop.targets || []).map(sel => document.querySelector(sel)).filter(el => el && el.offsetParent !== null);
+
+    function tourStart(again = false) {
+        if ($("infoDialog").open) $("infoDialog").close();
+        navPopOpen = null;
+        renderNav();
+        if (again) tourSave({ ...tourMemo(), hints: {} });   // taken again: the page hints show again too
+        tour.stops = (window.DashboardCards.tourStops || []).filter(s => !s.targets || tourParts(s).length);
+        tour.at = 0;
+        $("pageHint").hidden = true;
+        tourDraw();
+    }
+
+    function tourEnd() {
+        tour.at = -1;
+        $("tour").hidden = true;
+        tourSave({ ...tourMemo(), done: Date.now() / 1000 });
+        pageHint();
+    }
+
+    function tourDraw() {
+        if (tour.at < 0) return;
+        const stop = tour.stops[tour.at], box = $("tour"), parts = tourParts(stop), last = tour.at === tour.stops.length - 1;
+        const lines = (easyMode() && stop.easy) || stop.lines;
+        box.innerHTML = `<div class="tour-hole" hidden></div><div class="tour-card" role="dialog" aria-modal="true" aria-label="Guided tour">
+            <div class="tour-count">${tour.at + 1} of ${tour.stops.length}</div><h3>${F.esc(stop.title)}</h3>${lines.map(t => `<p>${F.esc(t)}</p>`).join("")}
+            <div class="tour-buttons"><button type="button" class="btn small" data-tour="skip">Skip Tour</button><span></span>
+                ${tour.at ? `<button type="button" class="btn small" data-tour="back">Back</button>` : ""}
+                <button type="button" class="btn small primary" data-tour="${last ? "skip" : "next"}">${last ? "Done" : "Next"}</button></div></div>`;
+        box.hidden = false;
+        box.classList.toggle("dim", !parts.length);
+        // On-screen px to page px, as the hover box (placeTip).
+        const z = pageZoom(), hole = box.querySelector(".tour-hole"), card = box.querySelector(".tour-card");
+        const W = window.innerWidth / z, H = window.innerHeight / z;
+        if (parts.length) {
+            const rects = parts.map(el => el.getBoundingClientRect());
+            const left = Math.min(...rects.map(r => r.left)) / z - 4, top = Math.min(...rects.map(r => r.top)) / z - 4;
+            const right = Math.max(...rects.map(r => r.right)) / z + 4, bottom = Math.max(...rects.map(r => r.bottom)) / z + 4;
+            Object.assign(hole.style, { left: left + "px", top: top + "px", width: right - left + "px", height: bottom - top + "px" });
+            hole.hidden = false;
+            // Beside the part (the menu is on the left); under it when there is no room beside.
+            const beside = right + 16 + card.offsetWidth <= W - 8;
+            card.style.left = (beside ? right + 16 : Math.max(8, Math.min(left, W - card.offsetWidth - 8))) + "px";
+            card.style.top = Math.max(8, Math.min(beside ? top : bottom + 12, H - card.offsetHeight - 8)) + "px";
+        } else {
+            card.style.left = Math.max(8, (W - card.offsetWidth) / 2) + "px";
+            card.style.top = Math.max(8, (H - card.offsetHeight) / 3) + "px";
+        }
+        card.querySelector(".primary").focus();
+    }
+
+    function tourStep(how) {
+        if (how === "skip") { tourEnd(); return; }
+        tour.at = Math.max(0, Math.min(tour.stops.length - 1, tour.at + (how === "back" ? -1 : 1)));
+        tourDraw();
+    }
+    $("tour").addEventListener("click", e => { const b = e.target.closest("[data-tour]"); if (b) tourStep(b.dataset.tour); });
+    document.addEventListener("keydown", e => {
+        if (tour.at < 0) return;
+        if (e.key === "Escape") { e.preventDefault(); tourStep("skip"); }
+        else if (e.key === "ArrowRight" && tour.at < tour.stops.length - 1) tourStep("next");
+        else if (e.key === "ArrowLeft") tourStep("back");
+        else if (e.key === "Tab") { e.preventDefault(); const bs = [...$("tour").querySelectorAll("button")]; bs[(bs.indexOf(document.activeElement) + (e.shiftKey ? bs.length - 1 : 1)) % bs.length].focus(); }
+    }, true);
+    window.addEventListener("resize", tourDraw);
+
+    // After the setup page's Finish: once, at the first data of a visit.
+    function tourAuto(data) {
+        if (tour.checked) return;
+        tour.checked = true;
+        if (data.setup_done_at && data.setup_done_at > (tourMemo().done || 0) && !$("infoDialog").open) tourStart();
+    }
+
+    // The page's first-visit line (only once the tour was taken or skipped in this browser).
+    function pageHint() {
+        const memo = tourMemo(), text = (window.DashboardCards.pageHints || {})[state.page], box = $("pageHint");
+        const show = !!text && !!memo.done && !(memo.hints || {})[state.page] && tour.at < 0;
+        box.hidden = !show;
+        if (show) box.innerHTML = `<span><b>First time here:</b> ${F.esc(text)}</span><button type="button" class="btn small" data-hint-got>Got It</button>`;
+    }
+    $("pageHint").addEventListener("click", e => {
+        if (!e.target.closest("[data-hint-got]")) return;
+        const memo = tourMemo();
+        tourSave({ ...memo, hints: { ...(memo.hints || {}), [state.page]: 1 } });
+        pageHint();
+    });
+
     // refresh: redraw the current page now (a view's own extra fetch landed).
     window.FirewallaDashboard = { state, showPage, saveSetting: saveLayoutSetting, openClient: openClientDialog, openRule: openRuleDialog,
         say, note: text => showMessage(text, "muted", 2500),
         seenPages: pagesSeen,   // when you last looked at each page (the menu's red or yellow *)
+        tour: { start: tourStart, running: () => tour.at >= 0 },
         easy: { on: easyMode, shows: id => { const p = PAGE_ALIASES[id] || id; return !easyMode() || !pages.some(x => x.id === p) || EASY_PAGES.has(p); } },
         menu: { pages: menuPages, sections: menuSections, icon: navIcon, set: setMenu, get: () => state.layouts.menu || {} },
         // Freeze a page's data for analysis: get(page) -> when frozen (or 0).

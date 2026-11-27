@@ -2494,8 +2494,11 @@ ALERT_KINDS = {
     "critical": ("Critical Firewalla Alarm", "a new Critical alarm on the Alarms page"),
     "equipment": ("AP or Switch Outage", "an access point or switch in Outage for 2 minutes, and back"),
     "client_offline": ("Client Offline", "a client offline longer than its Warn After time (Offline Email Warnings, below), and back online"),
+    "assessment": ("Network Assessment Findings", "one email when the Network Assessment's findings are ready"),
 }
-ALERT_LINKS = {"critical": "alarms", "health": "settings", "equipment": "equipment", "client_offline": "devices"}
+ALERT_LINKS = {"critical": "alarms", "health": "settings", "equipment": "equipment", "client_offline": "devices", "assessment": "assessment"}
+ALERT_ASSESSMENT_NAMED = 8   # most findings named in the email
+ALERT_ASSESSMENT_SETTLE = 600   # the findings must have been there this long (seconds) before the email
 ALERT_EQUIPMENT_SECONDS = 120
 alert_lock = threading.Lock()
 alert_live = {"down_since": {}, "in_use": None, "part_bad_since": {}, "outage_end": 0,
@@ -2506,7 +2509,7 @@ ALERT_RETRY_SECONDS = (60, 300, 900)   # the wait after the 1st, 2nd and every l
 def alert_load():
     st = policy_read_json(ALERT_STATE_FILE) or {}
     for key, empty in (("off", []), ("open", {}), ("pending", []), ("log", []), ("per_day", {}), ("seen_critical", None),
-                       ("alive_at", None), ("paused_day", None)):
+                       ("alive_at", None), ("paused_day", None), ("assessment_mailed", [])):
         st.setdefault(key, empty)
     return st
 
@@ -2761,6 +2764,34 @@ def alert_critical(st, now):
     st["seen_critical"] = st["seen_critical"][-500:]
 
 
+def alert_assessment(st, now):
+    """One email when the Network Assessment's findings are ready (D-1072):
+    after its Yes, once it has worked them out. "30" = the findings up to
+    the 30-day ones (settings, rules, unused Allow rules); the 7-day traffic
+    findings get an email of their own when they are built. Sent once per
+    install: assessment_mailed remembers it, also while the kind is off.
+    Not in the first 10 minutes after a start, and only once the rules are
+    read: the first email (26 Nov 2026) went out seconds after a restart and
+    said "nothing to do" with four findings waiting. ("ready" replaced the
+    key "30" then, so that install got the right email.)"""
+    summary = state.get("assessment")
+    if "ready" in st["assessment_mailed"] or not summary or (summary.get("offer") or {}).get("state") != "yes"             or not (state.get("policy_rules") or {}).get("rules"):
+        return
+    since = alert_live.setdefault("assessment_since", now)
+    if now - since < ALERT_ASSESSMENT_SETTLE:
+        return
+    import assessment
+    todo = [x for x in (assessment.assessment_full or {}).get("findings") or [] if not x["declined"]]
+    st["assessment_mailed"].append("ready")
+    named = "; ".join(x["title"] for x in todo[:ALERT_ASSESSMENT_NAMED]) + (
+        f"; and {len(todo) - ALERT_ASSESSMENT_NAMED} more" if len(todo) > ALERT_ASSESSMENT_NAMED else "")
+    alert_event(st, "assessment", f"Network Assessment: {len(todo)} finding{'' if len(todo) == 1 else 's'} to do" if todo
+                else "Network Assessment: nothing to do",
+                (f"{named}. Each has its steps on the Network Assessment page." if todo else
+                 "It checked where every client connects and what your rules, groups and lists can do, and found nothing to put right. "
+                 "It keeps checking; new findings show in Needs You on Status."), now)
+
+
 def alert_mail_body(events, now):
     import html as H
     link = DIGEST_DASHBOARD_URL
@@ -2879,7 +2910,7 @@ def alert_worker():
                         alert_live["in_use"] = None
                     for check in (alert_wans, alert_poor, alert_parts, alert_clients):
                         run(check)
-                for check in (alert_equipment, alert_critical, alert_send):
+                for check in (alert_equipment, alert_critical, alert_assessment, alert_send):
                     run(check)
                 st["log"] = [e for e in st["log"] if e["at"] >= now - ALERT_KEEP_SECONDS]
                 st["per_day"] = {d: n for d, n in st["per_day"].items() if d >= datetime.fromtimestamp(now - 7 * 86400).strftime("%Y-%m-%d")}

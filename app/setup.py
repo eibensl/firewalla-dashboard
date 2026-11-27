@@ -125,6 +125,15 @@ def setup_file_ok(name):
         return False
 
 
+def setup_done_at():
+    """When the setup page's Finish was pressed (seconds since 1970), or 0.
+    /api/status carries it so the guided tour starts once, after setup."""
+    try:
+        return os.path.getmtime(os.path.join(SETUP_DIR, "setup_done"))
+    except OSError:
+        return 0
+
+
 def setup_read_settings():
     """settings.env as {name: value} (the file as it is now, not as it was
     when the dashboard started)."""
