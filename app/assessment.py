@@ -59,6 +59,7 @@ ASSESSMENT_EVERY = 60                  # seconds between looks
 ASSESSMENT_HISTORY_EVERY = 24 * 3600   # how often the router's history length is checked
 ASSESSMENT_TRAFFIC_EVERY = 600         # how often the 7-day traffic findings are worked out again (D-1088)
 assessment_traffic = {"at": 0, "found": None, "days": 0}
+ASSESSMENT_OWN_DECISIONS = ("keep", "accept", "chose")   # Policy decision kinds you made yourself
 ASSESSMENT_HISTORY_DAYS = (1, 3, 7, 14, 30)
 ASSESSMENT_LATER = 3 * 86400            # Ask Me Later: asked again after this long
 ASSESSMENT_UNPLACED_WAIT = 600         # an online client no AP or switch reports is asked about after this long
@@ -325,10 +326,14 @@ def assessment_partly_used(now):
     line for the Findings box; read with the 7-day tier, every 10 minutes."""
     from access import open_unused_page
     if now - assessment_traffic.get("ou_at", 0) >= ASSESSMENT_TRAFFIC_EVERY:
-        rows = (open_unused_page() or {}).get("ports") or []
-        assessment_traffic.update(ou_at=now, ou=[{"pid": x.get("pid"), "rule": x.get("rule"), "allowed": x.get("allowed"),
-                                                  "used": ", ".join(x.get("used") or []), "grants": x.get("grants")}
-                                                 for x in rows if x.get("state") == "Partly Used"])
+        assessment_traffic["ou_at"] = now
+        try:
+            rows = (open_unused_page() or {}).get("ports") or []
+            assessment_traffic["ou"] = [{"pid": x.get("pid"), "rule": x.get("rule"), "allowed": x.get("allowed"),
+                                         "used": ", ".join(x.get("used") or []), "grants": x.get("grants")}
+                                        for x in rows if x.get("state") == "Partly Used"]
+        except Exception as exc:
+            print("Assessment Open But Unused error:", exc)
     return assessment_traffic.get("ou") or []
 
 
@@ -418,11 +423,20 @@ def assessment_findings(st, clients, now):
         add(f["id"], f["kind"], f["tone"], f["title"], f["facts"], f["steps"], f["sig"])
     # The 7-day tier (trafficcheck.py, D-1088): only once a full week of traffic is recorded.
     # A week of rows is read every 10 minutes, not at every look.
+    # A failed read keeps the last result and waits the same 10 minutes: the
+    # rest of the assessment still goes out (code review 27 Nov 2026).
     if now - assessment_traffic["at"] >= ASSESSMENT_TRAFFIC_EVERY:
-        rows = access_local_rows(TRAFFIC_DAYS * 24)
-        keep_blocked = {k for k, d in (policy_state_load().get("decisions") or {}).items() if d.get("intent") == "block"}
-        assessment_traffic.update(at=now, found=traffic_findings(rows, sides, keep_blocked, assessment_rules_say(rows, sides, groups), now),
-                                  days=min(traffic_covered(rows, now), TRAFFIC_DAYS))
+        assessment_traffic["at"] = now
+        try:
+            rows = access_local_rows(TRAFFIC_DAYS * 24)
+            # Only blocks you chose leave it out (Keep, Kept Router Rule, your own
+            # pick): not Policy's own 7-day settle ("default") or its automatic kinds.
+            keep_blocked = {k for k, d in (policy_state_load().get("decisions") or {}).items()
+                            if d.get("intent") == "block" and d.get("kind") in ASSESSMENT_OWN_DECISIONS}
+            found = traffic_findings(rows, sides, keep_blocked, assessment_rules_say(rows, sides, groups), now)
+            assessment_traffic.update(found=found, days=TRAFFIC_DAYS if found is not None else min(traffic_covered(rows, now), TRAFFIC_DAYS))
+        except Exception as exc:
+            print("Assessment 7-day findings error:", exc)
     found = assessment_traffic["found"]
     st["traffic"] = {"ready": found is not None, "days": assessment_traffic["days"], "at": assessment_traffic["at"]}
     for f in found or []:

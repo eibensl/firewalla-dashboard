@@ -1583,18 +1583,33 @@ def policy_rule_for_pid(pid):
 GEAR_GONE_SECONDS = 120
 GEAR_HEARD_AFTER_SECONDS = 60   # the router's stamp can trail the AP's last listing a little
 gear_seen = {}                  # MAC -> last time an AP listed it or a linked switch port held it
+gear_port = {}                  # MAC -> (switch id, port) a switch last placed it on
 
 
 def gear_presence(now):
     """Notes who is on an AP or a linked switch port now; returns gear_seen,
-    or None when the AP or switch reads are too old to judge by."""
+    or None when the AP or switch reads are too old to judge by. A wired
+    client stays present while the switch port it was last placed on keeps
+    its link: the switch's address table forgets a quiet client (a sleeping
+    printer) although its cable is still in, so only a pulled cable or a
+    power cut (the link drops) counts as leaving (code review 27 Nov 2026)."""
     if now - float(state.get("wifi_last_update") or 0) > 30 or now - float(state.get("switch_last_update") or 0) > 60:
         return None
     for mac in state.get("wifi_stations") or {}:
         gear_seen[str(mac).upper()] = now
-    for mac, w in (state.get("wired_clients") or {}).items():
+    wired = {str(m).upper(): w for m, w in (state.get("wired_clients") or {}).items()}
+    for mac, w in wired.items():
+        gear_port[mac] = (w.get("switch_id"), str(w.get("port")))
         if w.get("link_up") is not False:
-            gear_seen[str(mac).upper()] = now
+            gear_seen[mac] = now
+    switches = state.get("switches") or {}
+    for mac, (sid, port) in list(gear_port.items()):
+        if mac in wired or mac in (state.get("wifi_stations") or {}):
+            continue
+        if ((((switches.get(sid) or {}).get("ports") or {}).get(port) or {}).get("link_up")) is True:
+            gear_seen[mac] = now   # not in the table just now, but its cable still has a link
+        elif now - gear_seen.get(mac, now) > 86400:
+            del gear_port[mac]
     for mac in [m for m, t in gear_seen.items() if now - t > 86400]:
         del gear_seen[mac]   # gone a day: the 30-minute timer has long said offline
     return gear_seen

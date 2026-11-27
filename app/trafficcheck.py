@@ -39,8 +39,7 @@ def traffic_findings(rows, sides, blocked_keys, rules_say, now):
     rows don't hold a full week yet."""
     if not rows or now - min((r[8] for r in rows if r[8]), default=now) < TRAFFIC_COVER_SECONDS:
         return None
-    days = min(traffic_covered(rows, now), TRAFFIC_DAYS)
-    rests = f"{days} days of your traffic"
+    rests = f"{TRAFFIC_DAYS} days of your traffic"   # a full week, whatever minute the hour rows start at
     name = lambda mac: (sides.get(mac) or {}).get("name") or mac
     out = []
 

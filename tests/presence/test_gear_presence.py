@@ -67,5 +67,22 @@ router.gear_seen[PORTDEV] = T("09:07:10") - 86401
 tick(T("09:07:10"), [OTHER, AC])
 check("a day gone: forgotten", PORTDEV in router.gear_seen, False)
 
-print("\n".join(fails) or "all 15 pass")
+# Wired: the switch forgets a quiet client (a sleeping printer) while its cable is in.
+PRN = "AA:BB:CC:00:00:05"
+port = lambda up: {"SW1": {"ports": {"7": {"link_up": up}}}}
+state["switches"] = port(True)
+g = tick(T("10:00:00"), [], {PRN: {"switch_id": "SW1", "port": "7", "link_up": True}})
+state["switches"] = port(True)
+g = tick(T("10:05:00"), [], {})   # gone from the address table, port 7 still has a link
+check("quiet but plugged in: online", router.gear_left_at(g, PRN, T("09:59:00"), T("10:05:00")), None)
+state["switches"] = port(False)
+g = tick(T("10:05:10"), [], {})   # the cable is pulled
+g = tick(T("10:07:20"), [], {})
+check("cable pulled: offline 2 min later", router.gear_left_at(g, PRN, T("09:59:00"), T("10:07:20")), T("10:05:00"))
+state["switches"] = port(True)
+g = tick(T("10:08:00"), [], {PRN: {"switch_id": "SW1", "port": "7", "link_up": True}})
+check("plugged back in: online", router.gear_left_at(g, PRN, T("10:07:59"), T("10:08:00")), None)
+
+
+print("\n".join(fails) or f"all {checks} pass")
 sys.exit(1 if fails else 0)
