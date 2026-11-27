@@ -32,6 +32,7 @@ from router import access_device_protect, feature_settings, internet_interface_n
 from access import (
     HOWTO_GROUP_SWITCHES, HOWTO_STEP_KEYS, HOWTO_UNTRIED_INTERNET, access_allowed_owner, access_is_gear, access_isolated, access_local_rules, access_paused, access_rule_text,
     access_list_entries, access_local_rows, access_sides, access_target_list_side, check_local_access, howto_addresses, howto_app, howto_direction, howto_expect, howto_fit,
+    howto_group_number, howto_short_name,
     howto_port,
     howto_id, howto_left_behind, howto_load, howto_lock, howto_mark_done, howto_matching, howto_reserve_step, howto_reserved, howto_save, howto_trial,
 )
@@ -843,9 +844,14 @@ def ob_plan(mac, mode=None, like=None, to=None, frm=None, name=None, conn=None, 
     else:
         want_to, want_from = ob_refs(to, choices), ob_refs(frm, choices)
         out["to"], out["frm"] = want_to, want_from
-        gname = howto_fit([name])
+        # Named like your other groups (owner, 27 Nov 2026, D-1091): the next
+        # number in front and its network at the end, "G30 Printer .7".
+        octets = str(x.get("ip") or "").split(".")
+        net_end = f" .{octets[2]}" if len(octets) == 4 and octets[2].isdigit() else ""
+        base = howto_short_name(name) + net_end
+        gname = howto_fit([base], prefix=howto_group_number(groups))
         if any(str(g.get("name") or "").lower() == gname.lower() for g in groups.values()):
-            gname = howto_fit([name], tail="2")
+            gname = howto_fit([base], tail="2", prefix=howto_group_number(groups))
         out["group_name"] = gname
         new = {"id": OB_NEW, "name": gname, "members": [x["mac"]], "vqlan": True, "isolation": False}
         steps.append({"title": f"Make a group \"{gname}\" with only {howto_id(shown)}",

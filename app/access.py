@@ -2015,6 +2015,18 @@ def howto_list_number(taken=()):
     return f"{letters}{max(int(n) for n in mine) + 1:0{max(len(n) for n in mine)}d} "
 
 
+def howto_group_number(groups):
+    """"G30 " when most of your groups are numbered that way (G01 ... G29): the next number, with the same letter and width;
+    "" otherwise. Firewalla's own Quarantine group doesn't count."""
+    names = [str(g.get("name") or "") for g in groups.values() if str(g.get("name") or "").lower() != "quarantine"]
+    marks = [m for m in (re.match(r"^([A-Za-z])(\d{2,3})\s", n) for n in names) if m]
+    if not marks or len(marks) * 2 < len(names):
+        return ""
+    letter = max({m.group(1) for m in marks}, key=lambda x: sum(1 for m in marks if m.group(1) == x))
+    mine = [m.group(2) for m in marks if m.group(1) == letter]
+    return f"{letter}{max(int(n) for n in mine) + 1:0{max(len(n) for n in mine)}d} "
+
+
 def howto_own_list_name(unit, dst_picked, dsts, taken=(), groups=None):
     """The name of a new list of this unit's own: what it reaches, then whose
     it is, numbered like your other lists: "T11 NAS Recovery PC B". What
